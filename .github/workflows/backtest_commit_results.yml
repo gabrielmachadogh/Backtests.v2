@@ -27,6 +27,11 @@ on:
   schedule:
     - cron: "0 3 * * *"
 
+# Evita duas execuções concorrentes brigarem pelo push
+concurrency:
+  group: backtest-results
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -116,16 +121,33 @@ jobs:
           fi
           python analyze_patterns.py --trades "$TRADES_FILE" --min_trades "$MIN_TRADES"
 
-      - name: Commit results/ to results branch
+      - name: Commit results/ to results branch (fast-forward safe)
         shell: bash
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
 
+          # guarda results gerado antes de trocar branch
+          rm -rf /tmp/results_snapshot
+          mkdir -p /tmp/results_snapshot
+          cp -r results /tmp/results_snapshot/results
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git checkout -B "$RESULTS_BRANCH"
+          # garante que sabemos o estado do remoto
+          git fetch origin "$RESULTS_BRANCH" || true
+
+          # faz checkout baseado na ponta remota (se existir)
+          if git show-ref --verify --quiet "refs/remotes/origin/${RESULTS_BRANCH}"; then
+            git checkout -B "$RESULTS_BRANCH" "origin/${RESULTS_BRANCH}"
+          else
+            git checkout -B "$RESULTS_BRANCH"
+          fi
+
+          # restaura results atualizado (substitui tudo)
+          rm -rf results
+          cp -r /tmp/results_snapshot/results results
 
           git add results/
           if git diff --cached --quiet; then
@@ -134,4 +156,6 @@ jobs:
           fi
 
           git commit -m "Backtest ${SYMBOL} ${TIMEFRAME} long (RR=${RR_LIST}) [run ${GITHUB_RUN_ID}]"
+
+          # agora é fast-forward (ou criação de branch), não deve rejeitar
           git push origin "$RESULTS_BRANCH"
