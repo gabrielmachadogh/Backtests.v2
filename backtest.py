@@ -3,20 +3,26 @@
 
 """
 Backtest BTC_USDT perp (MEXC) - 1h - ONLY LONG - Setups: PFR + Dave Landry
-Rules/Features as specified:
-- Trend filter: close > SMA8 and close > SMA80 and SMA8 > SMA80 (on signal candle i)
-- Slope filter (mandatory): SMA8[i] > max(SMA8[i-8:i])  (max of previous 8 SMA8 values)
-- Entry: buy stop at high[i] + 1 tick
-- Stop: low[i] - 1 tick
-- MAX_ENTRY_WAIT_BARS = 1 (must trigger on i+1 or cancel)
-- RR: 1.0, 1.5, 2.0, 3.0 (independent simulations)
-- One position at a time
-- No fees/slippage/funding
-- Conservative ambiguity: if TP and SL hit same candle => LOSS
 
-Outputs:
-- results/backtest_trades_{symbol}_{timeframe}_long.csv
-- results/backtest_summary_{symbol}_{timeframe}_long.csv
+Regras:
+- Trend (no candle do sinal i): close > SMA8, close > SMA80, SMA8 > SMA80
+- Slope obrigatório (no candle i): SMA8[i] > max(SMA8[i-8:i]) (8 anteriores)
+- Setups (candle i):
+  PFR long: low[i] < low[i-1] and low[i] < low[i-2] and close[i] > close[i-1]
+  DL long : low[i] < low[i-1] and low[i] < low[i-2]
+  Entrada: buy stop em high[i] + 1 tick
+- Execução: MAX_ENTRY_WAIT_BARS=1 (só pode preencher no candle i+1)
+- Stop: low[i] - 1 tick
+- TP: entry + RR * risco, RR=[1.0,1.5,2.0,3.0]
+- 1 trade por vez
+- Sem custos
+- Ambíguo (TP e SL no mesmo candle): LOSS
+
+Outputs (ambos):
+- results/backtest_trades_{symbol}_{timeframe}_long.csv  (novo)
+- results/backtest_trades_{symbol}.csv                  (compat)
+- results/backtest_summary_{symbol}_{timeframe}_long.csv (novo)
+- results/backtest_summary_{symbol}.csv                  (compat)
 """
 
 import os
@@ -30,11 +36,7 @@ import pandas as pd
 import requests
 
 
-# =========================
-# Config
-# =========================
 MEXC_CONTRACT_BASE = "https://contract.mexc.com"
-
 DEFAULT_TICK_SIZE = 0.1
 
 ATR_PERIOD = 14
@@ -42,19 +44,18 @@ RSI_PERIOD = 14
 STRUCT_N = 20
 EXTREME_LOOKBACK = 20
 
-AMBIGUOUS_POLICY = "loss"  # "loss" conservative
+AMBIGUOUS_POLICY = "loss"  # conservative
 
 
-# =========================
-# Utils
-# =========================
+# -------------------------
+# utils
+# -------------------------
 def ensure_dirs():
     os.makedirs("data", exist_ok=True)
     os.makedirs("results", exist_ok=True)
 
 
 def to_utc_datetime(ts: int) -> pd.Timestamp:
-    # ts can be seconds or milliseconds
     if ts > 10_000_000_000:  # ms
         return pd.to_datetime(ts, unit="ms", utc=True)
     return pd.to_datetime(ts, unit="s", utc=True)
@@ -63,8 +64,7 @@ def to_utc_datetime(ts: int) -> pd.Timestamp:
 def format_pct_ptbr(x: float, decimals: int = 1) -> str:
     if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))):
         return ""
-    s = f"{x:.{decimals}f}".replace(".", ",")
-    return f"{s}%"
+    return f"{x:.{decimals}f}".replace(".", ",") + "%"
 
 
 def mexc_request(path: str, params: Optional[dict] = None, timeout: int = 30) -> dict:
@@ -75,14 +75,9 @@ def mexc_request(path: str, params: Optional[dict] = None, timeout: int = 30) ->
 
 
 def get_tick_size_mexc_contract(symbol: str) -> float:
-    """
-    Best-effort tick size fetch from MEXC Contract detail endpoint.
-    If not available, fallback to DEFAULT_TICK_SIZE.
-    """
     try:
         j = mexc_request("/api/v1/contract/detail", params={"symbol": symbol})
         data = j.get("data", {}) if isinstance(j, dict) else {}
-        # Common key in MEXC contract: "priceUnit"
         for k in ["priceUnit", "price_unit", "priceUnitPrecision", "price_unit_precision"]:
             if k in data:
                 v = data[k]
@@ -94,21 +89,12 @@ def get_tick_size_mexc_contract(symbol: str) -> float:
 
 
 def _parse_kline_json(j: dict) -> pd.DataFrame:
-    """
-    Supports common MEXC contract kline response shapes:
-    1) {"success":true,"data":{"time":[...],"open":[...],"high":[...],"low":[...],"close":[...],"vol":[...]}}
-    2) {"success":true,"data":[{"time":...,"open":...,...}, ...]}
-    """
-    if not isinstance(j, dict):
-        raise ValueError("Unexpected kline response type")
-
     data = j.get("data")
     if data is None:
         raise ValueError(f"No 'data' in response: keys={list(j.keys())}")
 
-    # Array-of-fields format
     if isinstance(data, dict) and "time" in data:
-        df = pd.DataFrame({
+        return pd.DataFrame({
             "timestamp": data.get("time", []),
             "open": data.get("open", []),
             "high": data.get("high", []),
@@ -116,9 +102,7 @@ def _parse_kline_json(j: dict) -> pd.DataFrame:
             "close": data.get("close", []),
             "volume": data.get("vol", data.get("volume", [])),
         })
-        return df
 
-    # List-of-dicts format
     if isinstance(data, list):
         rows = []
         for r in data:
@@ -143,21 +127,17 @@ def fetch_klines_mexc_contract_max_history(
     limit_bars_per_call: int = 1000,
     pause_s: float = 0.15,
 ) -> pd.DataFrame:
-    """
-    Best-effort pagination backwards using start/end windows.
-    Public endpoints can have limitations; we keep requesting older windows until no progress.
-    """
     tf_map = {"1h": ("Min60", 60 * 60)}
     if timeframe not in tf_map:
-        raise ValueError(f"Unsupported timeframe={timeframe} (this project uses only 1h).")
+        raise ValueError("Only 1h supported in this project.")
 
     interval, bar_seconds = tf_map[timeframe]
 
     end_ts = int(time.time())
-    all_batches = []
+    batches = []
     seen_min_ts = None
 
-    for _ in range(10_000):  # safety cap
+    for _ in range(10_000):
         start_ts = end_ts - limit_bars_per_call * bar_seconds
         params = {"interval": interval, "start": start_ts, "end": end_ts}
 
@@ -168,7 +148,7 @@ def fetch_klines_mexc_contract_max_history(
             break
 
         df = df.dropna(subset=["timestamp"]).copy()
-        df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce").astype("Int64")
+        df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")
         df = df.dropna(subset=["timestamp"]).copy()
         df["timestamp"] = df["timestamp"].astype(np.int64)
 
@@ -179,27 +159,21 @@ def fetch_klines_mexc_contract_max_history(
         df = df.sort_values("timestamp").drop_duplicates(subset=["timestamp"], keep="last")
 
         batch_min = int(df["timestamp"].min())
-
-        # stop if not moving backwards
         if seen_min_ts is not None and batch_min >= seen_min_ts:
             break
         seen_min_ts = batch_min
 
-        all_batches.append(df)
-
-        # move end backwards
+        batches.append(df)
         end_ts = batch_min - 1
         time.sleep(pause_s)
 
-    if not all_batches:
-        raise RuntimeError("Failed to fetch klines: API returned no usable data.")
+    if not batches:
+        raise RuntimeError("Failed to fetch klines (no data).")
 
-    out = pd.concat(all_batches, ignore_index=True)
+    out = pd.concat(batches, ignore_index=True)
     out = out.sort_values("timestamp").drop_duplicates(subset=["timestamp"], keep="last").reset_index(drop=True)
     out["datetime"] = out["timestamp"].apply(to_utc_datetime)
-
-    out = out[["timestamp", "datetime", "open", "high", "low", "close", "volume"]]
-    return out
+    return out[["timestamp", "datetime", "open", "high", "low", "close", "volume"]]
 
 
 def load_or_fetch_data(symbol: str, timeframe: str = "1h") -> pd.DataFrame:
@@ -224,9 +198,9 @@ def load_or_fetch_data(symbol: str, timeframe: str = "1h") -> pd.DataFrame:
     return df
 
 
-# =========================
-# Indicators / features
-# =========================
+# -------------------------
+# indicators/features
+# -------------------------
 def wilder_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     high = df["high"].astype(float)
     low = df["low"].astype(float)
@@ -238,8 +212,7 @@ def wilder_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     tr3 = (low - prev_close).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
-    atr = tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
-    return atr
+    return tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
 
 
 def wilder_rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -253,18 +226,10 @@ def wilder_rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
     avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
 
     rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+    return 100 - (100 / (1 + rs))
 
 
 def add_new_high_context(df: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
-    """
-    Features only (NO filtering):
-    - bars_since_new_high
-    - pullback_from_new_high_pct
-    - after_new_high_flag
-    and side-aware versions (same for long-only).
-    """
     out = df.copy()
     highs = out["high"].astype(float).values
     closes = out["close"].astype(float).values
@@ -286,15 +251,11 @@ def add_new_high_context(df: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
 
         if last_new_high_idx is None:
             after_flag[i] = 0
-            bars_since[i] = np.nan
-            pullback_pct[i] = np.nan
         else:
             after_flag[i] = 1
             bars_since[i] = i - last_new_high_idx
             if last_new_high and not np.isnan(last_new_high) and last_new_high != 0:
                 pullback_pct[i] = (last_new_high - closes[i]) / last_new_high * 100.0
-            else:
-                pullback_pct[i] = np.nan
 
     out["bars_since_new_high"] = bars_since
     out["pullback_from_new_high_pct"] = pullback_pct
@@ -303,18 +264,15 @@ def add_new_high_context(df: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
     out["context_bars_since_extreme"] = out["bars_since_new_high"]
     out["context_pullback_pct"] = out["pullback_from_new_high_pct"]
     out["context_after_extreme_flag"] = out["after_new_high_flag"]
-
     return out
 
 
 def add_indicators_and_features(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
 
-    # SMA
     out["sma8"] = out["close"].rolling(8, min_periods=8).mean()
     out["sma80"] = out["close"].rolling(80, min_periods=80).mean()
 
-    # slope helper: max SMA8 of previous 8 candles (strictly previous)
     out["sma8_prev8_max"] = out["sma8"].shift(1).rolling(8, min_periods=8).max()
     out["slope_up_flag"] = out["sma8"] > out["sma8_prev8_max"]
 
@@ -322,12 +280,10 @@ def add_indicators_and_features(df: pd.DataFrame) -> pd.DataFrame:
     out["dist_to_sma80_pct"] = (out["close"] - out["sma80"]) / out["sma80"] * 100.0
     out["slope_strength"] = (out["sma8"] - out["sma8_prev8_max"]) / out["close"] * 100.0
 
-    # ATR/RSI
     out["atr"] = wilder_atr(out, ATR_PERIOD)
     out["atr_pct"] = out["atr"] / out["close"] * 100.0
     out["rsi"] = wilder_rsi(out, RSI_PERIOD)
 
-    # Candle anatomy
     out["range"] = out["high"] - out["low"]
     out["range_pct"] = out["range"] / out["close"] * 100.0
     out["body"] = (out["close"] - out["open"]).abs()
@@ -341,12 +297,10 @@ def add_indicators_and_features(df: pd.DataFrame) -> pd.DataFrame:
     denom = (out["high"] - out["low"]).replace(0, np.nan)
     out["clv"] = (out["close"] - out["low"]) / denom
 
-    # Momentum
     out["ret_1_pct"] = out["close"].pct_change(1) * 100.0
     out["ret_3_pct"] = out["close"].pct_change(3) * 100.0
     out["ret_5_pct"] = out["close"].pct_change(5) * 100.0
 
-    # Structure N=20 (can include candle i, but no future)
     out["rolling_high_20"] = out["high"].rolling(STRUCT_N, min_periods=STRUCT_N).max()
     out["rolling_low_20"] = out["low"].rolling(STRUCT_N, min_periods=STRUCT_N).min()
     struct_denom = (out["rolling_high_20"] - out["rolling_low_20"]).replace(0, np.nan)
@@ -355,15 +309,12 @@ def add_indicators_and_features(df: pd.DataFrame) -> pd.DataFrame:
     out["dist_to_high_n_pct"] = (out["rolling_high_20"] - out["close"]) / out["close"] * 100.0
     out["dist_to_low_n_pct"] = (out["close"] - out["rolling_low_20"]) / out["close"] * 100.0
 
-    # Volume zscore 20
     vol = out["volume"].astype(float)
     vol_mean = vol.rolling(20, min_periods=20).mean()
     vol_std = vol.rolling(20, min_periods=20).std(ddof=0).replace(0, np.nan)
     out["vol_z"] = (vol - vol_mean) / vol_std
 
-    # New high context (features only)
     out = add_new_high_context(out, lookback=EXTREME_LOOKBACK)
-
     return out
 
 
@@ -385,28 +336,21 @@ def extract_feature_row(df: pd.DataFrame, i: int) -> Dict:
         "bars_since_new_high", "pullback_from_new_high_pct", "after_new_high_flag",
         "context_bars_since_extreme", "context_pullback_pct", "context_after_extreme_flag",
     ]
-    row = {}
-    for c in cols:
-        row[c] = df.at[i, c] if c in df.columns else np.nan
-    return row
+    return {c: (df.at[i, c] if c in df.columns else np.nan) for c in cols}
 
 
-# =========================
-# Backtest core
-# =========================
+# -------------------------
+# backtest
+# -------------------------
 @dataclass
 class TradeResult:
     entry_idx: int
     exit_idx: int
-    outcome: str       # "win" / "loss"
-    exit_reason: str   # "tp" / "sl"
+    outcome: str      # win/loss
+    exit_reason: str  # tp/sl
 
 
 def simulate_exit_long(df: pd.DataFrame, entry_idx: int, stop: float, tp: float) -> Optional[TradeResult]:
-    """
-    From entry_idx onwards, find first hit TP or SL.
-    Conservative ambiguity: if candle hits both => LOSS (SL).
-    """
     for j in range(entry_idx, len(df)):
         high = float(df.at[j, "high"])
         low = float(df.at[j, "low"])
@@ -416,15 +360,13 @@ def simulate_exit_long(df: pd.DataFrame, entry_idx: int, stop: float, tp: float)
 
         if hit_tp and hit_sl:
             if AMBIGUOUS_POLICY == "loss":
-                return TradeResult(entry_idx=entry_idx, exit_idx=j, outcome="loss", exit_reason="sl")
-            return TradeResult(entry_idx=entry_idx, exit_idx=j, outcome="win", exit_reason="tp")
+                return TradeResult(entry_idx, j, "loss", "sl")
+            return TradeResult(entry_idx, j, "win", "tp")
 
         if hit_sl:
-            return TradeResult(entry_idx=entry_idx, exit_idx=j, outcome="loss", exit_reason="sl")
-
+            return TradeResult(entry_idx, j, "loss", "sl")
         if hit_tp:
-            return TradeResult(entry_idx=entry_idx, exit_idx=j, outcome="win", exit_reason="tp")
-
+            return TradeResult(entry_idx, j, "win", "tp")
     return None
 
 
@@ -436,15 +378,10 @@ def backtest_one_rr(
     rr: float,
     max_entry_wait_bars: int = 1,
 ) -> List[Dict]:
-    """
-    Runs a single RR simulation.
-    Long-only, one position at a time.
-    """
     trades: List[Dict] = []
-
     i = 2
+
     while i < len(df) - 2:
-        # need indicators available + i+1 for entry check
         if pd.isna(df.at[i, "sma80"]) or pd.isna(df.at[i, "sma8_prev8_max"]):
             i += 1
             continue
@@ -453,16 +390,13 @@ def backtest_one_rr(
         sma8_i = float(df.at[i, "sma8"])
         sma80_i = float(df.at[i, "sma80"])
 
-        # Trend filter (long only)
         trend_ok = (close_i > sma8_i) and (close_i > sma80_i) and (sma8_i > sma80_i)
-        # Slope filter (mandatory)
         slope_ok = bool(df.at[i, "slope_up_flag"])
 
         if not (trend_ok and slope_ok):
             i += 1
             continue
 
-        # Setup candle i conditions
         low_i = float(df.at[i, "low"])
         low_1 = float(df.at[i - 1, "low"])
         low_2 = float(df.at[i - 2, "low"])
@@ -472,13 +406,8 @@ def backtest_one_rr(
         pfr_long = (low_i < low_1) and (low_i < low_2) and (close_i > close_1)
         dl_long = (low_i < low_1) and (low_i < low_2)
 
-        # If both trigger, prioritize PFR (more strict)
-        setup = None
-        if pfr_long:
-            setup = "PFR"
-        elif dl_long:
-            setup = "DL"
-
+        # prioridade: PFR > DL
+        setup = "PFR" if pfr_long else ("DL" if dl_long else None)
         if setup is None:
             i += 1
             continue
@@ -492,7 +421,7 @@ def backtest_one_rr(
 
         tp = entry + rr * risk
 
-        # Entry wait: only next bar when max_entry_wait_bars=1 (spec)
+        # entry only on i+1 (max_entry_wait_bars=1)
         filled = False
         fill_idx = None
         for wait in range(1, max_entry_wait_bars + 1):
@@ -510,45 +439,35 @@ def backtest_one_rr(
 
         res = simulate_exit_long(df, entry_idx=fill_idx, stop=stop, tp=tp)
         if res is None:
-            # no exit until end -> stop loop
             break
 
         feat = extract_feature_row(df, i)
-
-        signal_time = df.at[i, "datetime"]
-        entry_time = df.at[fill_idx, "datetime"]
-        exit_time = df.at[res.exit_idx, "datetime"]
 
         trade = {
             "timeframe": timeframe,
             "symbol": symbol,
             "setup": setup,
             "side": "long",
-
-            "signal_time": str(pd.Timestamp(signal_time).to_pydatetime().replace(tzinfo=None)) + "Z",
-            "entry_time": str(pd.Timestamp(entry_time).to_pydatetime().replace(tzinfo=None)) + "Z",
-            "exit_time": str(pd.Timestamp(exit_time).to_pydatetime().replace(tzinfo=None)) + "Z",
-
+            "signal_time": df.at[i, "datetime"].isoformat(),
+            "entry_time": df.at[fill_idx, "datetime"].isoformat(),
+            "exit_time": df.at[res.exit_idx, "datetime"].isoformat(),
             "signal_idx": i,
             "entry_idx": fill_idx,
             "exit_idx": res.exit_idx,
-
             "entry": entry,
             "stop": stop,
             "risk": risk,
             "rr": rr,
             "tp": tp,
-
             "outcome": res.outcome,
             "exit_reason": res.exit_reason,
-
             "fill_delay": int(fill_idx - i),
             "bars_in_trade": int(res.exit_idx - fill_idx + 1),
         }
         trade.update(feat)
         trades.append(trade)
 
-        # One position at a time: jump to next candle after exit
+        # one trade at a time
         i = res.exit_idx + 1
 
     return trades
@@ -556,7 +475,7 @@ def backtest_one_rr(
 
 def build_summary(trades_df: pd.DataFrame) -> pd.DataFrame:
     if trades_df.empty:
-        return pd.DataFrame(columns=["setup", "rr", "trades", "wins", "losses", "win_rate_pct"])
+        return pd.DataFrame(columns=["setup", "rr", "trades", "wins", "losses", "win_rate_pct", "win_rate_pct_num"])
 
     rows = []
     for (setup, rr), grp in trades_df.groupby(["setup", "rr"], dropna=False):
@@ -564,16 +483,97 @@ def build_summary(trades_df: pd.DataFrame) -> pd.DataFrame:
         w = int((grp["outcome"] == "win").sum())
         l = t - w
         wr = (w / t) * 100.0 if t > 0 else np.nan
-
         rows.append({
             "setup": setup,
             "rr": rr,
             "trades": t,
             "wins": w,
             "losses": l,
-            "win_rate_pct": format_pct_ptbr(wr, decimals=1),
+            "win_rate_pct": format_pct_ptbr(wr, 1),
             "win_rate_pct_num": wr,
         })
+    return pd.DataFrame(rows).sort_values(["setup", "rr"]).reset_index(drop=True)
 
-    out = pd.DataFrame(rows).sort_values(["setup", "rr"]).reset_index(drop=True)
-    return out
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--symbol", type=str, default="BTC_USDT")
+    parser.add_argument("--timeframe", type=str, default="1h")
+    parser.add_argument("--only_long", type=int, default=1)
+    parser.add_argument("--max_entry_wait", type=int, default=1)
+    parser.add_argument("--tick_size", type=float, default=None)
+    parser.add_argument("--rr_list", type=str, default="1.0,1.5,2.0,3.0")
+    args = parser.parse_args()
+
+    symbol = args.symbol
+    timeframe = args.timeframe
+    max_entry_wait = int(args.max_entry_wait)
+    rr_list = [float(x.strip()) for x in args.rr_list.split(",") if x.strip()]
+
+    ensure_dirs()
+
+    df = load_or_fetch_data(symbol=symbol, timeframe=timeframe)
+    df = add_indicators_and_features(df)
+
+    tick_size = float(args.tick_size) if args.tick_size is not None else get_tick_size_mexc_contract(symbol)
+
+    all_trades: List[Dict] = []
+    for rr in rr_list:
+        all_trades.extend(
+            backtest_one_rr(
+                df=df,
+                symbol=symbol,
+                timeframe=timeframe,
+                tick_size=tick_size,
+                rr=rr,
+                max_entry_wait_bars=max_entry_wait,
+            )
+        )
+
+    # garante header mesmo com 0 trades
+    base_cols = [
+        "timeframe", "symbol", "setup", "side",
+        "signal_time", "entry_time", "exit_time",
+        "signal_idx", "entry_idx", "exit_idx",
+        "entry", "stop", "risk", "rr", "tp",
+        "outcome", "exit_reason",
+        "fill_delay", "bars_in_trade",
+        "sma8", "sma80", "ma_gap_pct", "dist_to_sma80_pct", "slope_strength",
+        "atr", "atr_pct",
+        "range", "range_pct",
+        "body", "body_pct",
+        "upper_wick", "lower_wick",
+        "upper_wick_pct", "lower_wick_pct",
+        "clv",
+        "ret_1_pct", "ret_3_pct", "ret_5_pct",
+        "rsi",
+        "rolling_high_20", "rolling_low_20",
+        "pos_in_range_n", "dist_to_high_n_pct", "dist_to_low_n_pct",
+        "vol_z",
+        "bars_since_new_high", "pullback_from_new_high_pct", "after_new_high_flag",
+        "context_bars_since_extreme", "context_pullback_pct", "context_after_extreme_flag",
+    ]
+    trades_df = pd.DataFrame(all_trades, columns=base_cols)
+
+    # paths (novo + compat)
+    out_trades_new = f"results/backtest_trades_{symbol}_{timeframe}_long.csv"
+    out_trades_compat = f"results/backtest_trades_{symbol}.csv"
+    trades_df.to_csv(out_trades_new, index=False)
+    trades_df.to_csv(out_trades_compat, index=False)
+
+    summary_df = build_summary(trades_df)
+    out_summary_new = f"results/backtest_summary_{symbol}_{timeframe}_long.csv"
+    out_summary_compat = f"results/backtest_summary_{symbol}.csv"
+    summary_df.to_csv(out_summary_new, index=False)
+    summary_df.to_csv(out_summary_compat, index=False)
+
+    print(f"Saved trades (new):    {out_trades_new}")
+    print(f"Saved trades (compat): {out_trades_compat}")
+    print(f"Saved summary (new):   {out_summary_new}")
+    print(f"Saved summary (compat):{out_summary_compat}")
+    print(f"Tick size used: {tick_size}")
+    print(f"Trades: {len(trades_df)}")
+
+
+if __name__ == "__main__":
+    main()
