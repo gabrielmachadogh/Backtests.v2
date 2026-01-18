@@ -9,7 +9,7 @@ Regras:
 - Slope obrigatório (no candle i): SMA8[i] > max(SMA8[i-8:i]) (8 anteriores)
 - Setups (candle i):
   PFR long: low[i] < low[i-1] and low[i] < low[i-2] and close[i] > close[i-1]
-  DL long : low[i] < low[i-1] and low[i] < low[i-2]
+  DL  long: low[i] < low[i-1] and low[i] < low[i-2]
   Entrada: buy stop em high[i] + 1 tick
 - Execução: MAX_ENTRY_WAIT_BARS=1 (só pode preencher no candle i+1)
 - Stop: low[i] - 1 tick
@@ -29,7 +29,7 @@ import os
 import time
 import argparse
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -74,7 +74,37 @@ def mexc_request(path: str, params: Optional[dict] = None, timeout: int = 30) ->
     return r.json()
 
 
-def get_tick_size_mexc_contract(symbol: str) -> float:
+def normalize_tick_size(raw: Optional[float]) -> float:
+    """
+    Heurística:
+    - Se vier um inteiro pequeno (ex.: 1,2,3...) pode ser 'precisão' em casas decimais.
+      Ex.: 1 => 0.1; 2 => 0.01; 3 => 0.001 ...
+    - Se vier float < 1, assume que já é tick.
+    """
+    if raw is None:
+        return float(DEFAULT_TICK_SIZE)
+
+    try:
+        v = float(raw)
+    except Exception:
+        return float(DEFAULT_TICK_SIZE)
+
+    if not np.isfinite(v) or v <= 0:
+        return float(DEFAULT_TICK_SIZE)
+
+    # provável "precision" (1..8) em vez de tick
+    if v >= 1 and v <= 8 and float(v).is_integer():
+        return float(10 ** (-int(v)))
+
+    return float(v)
+
+
+def get_tick_size_mexc_contract(symbol: str) -> Tuple[float, Optional[float]]:
+    """
+    Best-effort tick size fetch from MEXC Contract detail endpoint.
+    Returns: (tick_size_normalized, raw_value_if_found)
+    """
+    raw_val = None
     try:
         j = mexc_request("/api/v1/contract/detail", params={"symbol": symbol})
         data = j.get("data", {}) if isinstance(j, dict) else {}
@@ -82,10 +112,13 @@ def get_tick_size_mexc_contract(symbol: str) -> float:
             if k in data:
                 v = data[k]
                 if isinstance(v, (int, float)) and float(v) > 0:
-                    return float(v)
+                    raw_val = float(v)
+                    break
     except Exception:
-        pass
-    return float(DEFAULT_TICK_SIZE)
+        raw_val = None
+
+    tick = normalize_tick_size(raw_val)
+    return tick, raw_val
 
 
 def _parse_kline_json(j: dict) -> pd.DataFrame:
@@ -278,302 +311,4 @@ def add_indicators_and_features(df: pd.DataFrame) -> pd.DataFrame:
 
     out["ma_gap_pct"] = (out["sma8"] - out["sma80"]) / out["sma80"] * 100.0
     out["dist_to_sma80_pct"] = (out["close"] - out["sma80"]) / out["sma80"] * 100.0
-    out["slope_strength"] = (out["sma8"] - out["sma8_prev8_max"]) / out["close"] * 100.0
-
-    out["atr"] = wilder_atr(out, ATR_PERIOD)
-    out["atr_pct"] = out["atr"] / out["close"] * 100.0
-    out["rsi"] = wilder_rsi(out, RSI_PERIOD)
-
-    out["range"] = out["high"] - out["low"]
-    out["range_pct"] = out["range"] / out["close"] * 100.0
-    out["body"] = (out["close"] - out["open"]).abs()
-    out["body_pct"] = out["body"] / out["close"] * 100.0
-
-    out["upper_wick"] = out["high"] - out[["open", "close"]].max(axis=1)
-    out["lower_wick"] = out[["open", "close"]].min(axis=1) - out["low"]
-    out["upper_wick_pct"] = out["upper_wick"] / out["close"] * 100.0
-    out["lower_wick_pct"] = out["lower_wick"] / out["close"] * 100.0
-
-    denom = (out["high"] - out["low"]).replace(0, np.nan)
-    out["clv"] = (out["close"] - out["low"]) / denom
-
-    out["ret_1_pct"] = out["close"].pct_change(1) * 100.0
-    out["ret_3_pct"] = out["close"].pct_change(3) * 100.0
-    out["ret_5_pct"] = out["close"].pct_change(5) * 100.0
-
-    out["rolling_high_20"] = out["high"].rolling(STRUCT_N, min_periods=STRUCT_N).max()
-    out["rolling_low_20"] = out["low"].rolling(STRUCT_N, min_periods=STRUCT_N).min()
-    struct_denom = (out["rolling_high_20"] - out["rolling_low_20"]).replace(0, np.nan)
-
-    out["pos_in_range_n"] = (out["close"] - out["rolling_low_20"]) / struct_denom
-    out["dist_to_high_n_pct"] = (out["rolling_high_20"] - out["close"]) / out["close"] * 100.0
-    out["dist_to_low_n_pct"] = (out["close"] - out["rolling_low_20"]) / out["close"] * 100.0
-
-    vol = out["volume"].astype(float)
-    vol_mean = vol.rolling(20, min_periods=20).mean()
-    vol_std = vol.rolling(20, min_periods=20).std(ddof=0).replace(0, np.nan)
-    out["vol_z"] = (vol - vol_mean) / vol_std
-
-    out = add_new_high_context(out, lookback=EXTREME_LOOKBACK)
-    return out
-
-
-def extract_feature_row(df: pd.DataFrame, i: int) -> Dict:
-    cols = [
-        "sma8", "sma80",
-        "ma_gap_pct", "dist_to_sma80_pct", "slope_strength",
-        "atr", "atr_pct",
-        "range", "range_pct",
-        "body", "body_pct",
-        "upper_wick", "lower_wick",
-        "upper_wick_pct", "lower_wick_pct",
-        "clv",
-        "ret_1_pct", "ret_3_pct", "ret_5_pct",
-        "rsi",
-        "rolling_high_20", "rolling_low_20",
-        "pos_in_range_n", "dist_to_high_n_pct", "dist_to_low_n_pct",
-        "vol_z",
-        "bars_since_new_high", "pullback_from_new_high_pct", "after_new_high_flag",
-        "context_bars_since_extreme", "context_pullback_pct", "context_after_extreme_flag",
-    ]
-    return {c: (df.at[i, c] if c in df.columns else np.nan) for c in cols}
-
-
-# -------------------------
-# backtest
-# -------------------------
-@dataclass
-class TradeResult:
-    entry_idx: int
-    exit_idx: int
-    outcome: str      # win/loss
-    exit_reason: str  # tp/sl
-
-
-def simulate_exit_long(df: pd.DataFrame, entry_idx: int, stop: float, tp: float) -> Optional[TradeResult]:
-    for j in range(entry_idx, len(df)):
-        high = float(df.at[j, "high"])
-        low = float(df.at[j, "low"])
-
-        hit_tp = high >= tp
-        hit_sl = low <= stop
-
-        if hit_tp and hit_sl:
-            if AMBIGUOUS_POLICY == "loss":
-                return TradeResult(entry_idx, j, "loss", "sl")
-            return TradeResult(entry_idx, j, "win", "tp")
-
-        if hit_sl:
-            return TradeResult(entry_idx, j, "loss", "sl")
-        if hit_tp:
-            return TradeResult(entry_idx, j, "win", "tp")
-    return None
-
-
-def backtest_one_rr(
-    df: pd.DataFrame,
-    symbol: str,
-    timeframe: str,
-    tick_size: float,
-    rr: float,
-    max_entry_wait_bars: int = 1,
-) -> List[Dict]:
-    trades: List[Dict] = []
-    i = 2
-
-    while i < len(df) - 2:
-        if pd.isna(df.at[i, "sma80"]) or pd.isna(df.at[i, "sma8_prev8_max"]):
-            i += 1
-            continue
-
-        close_i = float(df.at[i, "close"])
-        sma8_i = float(df.at[i, "sma8"])
-        sma80_i = float(df.at[i, "sma80"])
-
-        trend_ok = (close_i > sma8_i) and (close_i > sma80_i) and (sma8_i > sma80_i)
-        slope_ok = bool(df.at[i, "slope_up_flag"])
-
-        if not (trend_ok and slope_ok):
-            i += 1
-            continue
-
-        low_i = float(df.at[i, "low"])
-        low_1 = float(df.at[i - 1, "low"])
-        low_2 = float(df.at[i - 2, "low"])
-        high_i = float(df.at[i, "high"])
-        close_1 = float(df.at[i - 1, "close"])
-
-        pfr_long = (low_i < low_1) and (low_i < low_2) and (close_i > close_1)
-        dl_long = (low_i < low_1) and (low_i < low_2)
-
-        # prioridade: PFR > DL
-        setup = "PFR" if pfr_long else ("DL" if dl_long else None)
-        if setup is None:
-            i += 1
-            continue
-
-        entry = high_i + tick_size
-        stop = low_i - tick_size
-        risk = entry - stop
-        if risk <= 0:
-            i += 1
-            continue
-
-        tp = entry + rr * risk
-
-        # entry only on i+1 (max_entry_wait_bars=1)
-        filled = False
-        fill_idx = None
-        for wait in range(1, max_entry_wait_bars + 1):
-            j = i + wait
-            if j >= len(df):
-                break
-            if float(df.at[j, "high"]) >= entry:
-                filled = True
-                fill_idx = j
-                break
-
-        if not filled:
-            i += 1
-            continue
-
-        res = simulate_exit_long(df, entry_idx=fill_idx, stop=stop, tp=tp)
-        if res is None:
-            break
-
-        feat = extract_feature_row(df, i)
-
-        trade = {
-            "timeframe": timeframe,
-            "symbol": symbol,
-            "setup": setup,
-            "side": "long",
-            "signal_time": df.at[i, "datetime"].isoformat(),
-            "entry_time": df.at[fill_idx, "datetime"].isoformat(),
-            "exit_time": df.at[res.exit_idx, "datetime"].isoformat(),
-            "signal_idx": i,
-            "entry_idx": fill_idx,
-            "exit_idx": res.exit_idx,
-            "entry": entry,
-            "stop": stop,
-            "risk": risk,
-            "rr": rr,
-            "tp": tp,
-            "outcome": res.outcome,
-            "exit_reason": res.exit_reason,
-            "fill_delay": int(fill_idx - i),
-            "bars_in_trade": int(res.exit_idx - fill_idx + 1),
-        }
-        trade.update(feat)
-        trades.append(trade)
-
-        # one trade at a time
-        i = res.exit_idx + 1
-
-    return trades
-
-
-def build_summary(trades_df: pd.DataFrame) -> pd.DataFrame:
-    if trades_df.empty:
-        return pd.DataFrame(columns=["setup", "rr", "trades", "wins", "losses", "win_rate_pct", "win_rate_pct_num"])
-
-    rows = []
-    for (setup, rr), grp in trades_df.groupby(["setup", "rr"], dropna=False):
-        t = int(len(grp))
-        w = int((grp["outcome"] == "win").sum())
-        l = t - w
-        wr = (w / t) * 100.0 if t > 0 else np.nan
-        rows.append({
-            "setup": setup,
-            "rr": rr,
-            "trades": t,
-            "wins": w,
-            "losses": l,
-            "win_rate_pct": format_pct_ptbr(wr, 1),
-            "win_rate_pct_num": wr,
-        })
-    return pd.DataFrame(rows).sort_values(["setup", "rr"]).reset_index(drop=True)
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--symbol", type=str, default="BTC_USDT")
-    parser.add_argument("--timeframe", type=str, default="1h")
-    parser.add_argument("--only_long", type=int, default=1)
-    parser.add_argument("--max_entry_wait", type=int, default=1)
-    parser.add_argument("--tick_size", type=float, default=None)
-    parser.add_argument("--rr_list", type=str, default="1.0,1.5,2.0,3.0")
-    args = parser.parse_args()
-
-    symbol = args.symbol
-    timeframe = args.timeframe
-    max_entry_wait = int(args.max_entry_wait)
-    rr_list = [float(x.strip()) for x in args.rr_list.split(",") if x.strip()]
-
-    ensure_dirs()
-
-    df = load_or_fetch_data(symbol=symbol, timeframe=timeframe)
-    df = add_indicators_and_features(df)
-
-    tick_size = float(args.tick_size) if args.tick_size is not None else get_tick_size_mexc_contract(symbol)
-
-    all_trades: List[Dict] = []
-    for rr in rr_list:
-        all_trades.extend(
-            backtest_one_rr(
-                df=df,
-                symbol=symbol,
-                timeframe=timeframe,
-                tick_size=tick_size,
-                rr=rr,
-                max_entry_wait_bars=max_entry_wait,
-            )
-        )
-
-    # garante header mesmo com 0 trades
-    base_cols = [
-        "timeframe", "symbol", "setup", "side",
-        "signal_time", "entry_time", "exit_time",
-        "signal_idx", "entry_idx", "exit_idx",
-        "entry", "stop", "risk", "rr", "tp",
-        "outcome", "exit_reason",
-        "fill_delay", "bars_in_trade",
-        "sma8", "sma80", "ma_gap_pct", "dist_to_sma80_pct", "slope_strength",
-        "atr", "atr_pct",
-        "range", "range_pct",
-        "body", "body_pct",
-        "upper_wick", "lower_wick",
-        "upper_wick_pct", "lower_wick_pct",
-        "clv",
-        "ret_1_pct", "ret_3_pct", "ret_5_pct",
-        "rsi",
-        "rolling_high_20", "rolling_low_20",
-        "pos_in_range_n", "dist_to_high_n_pct", "dist_to_low_n_pct",
-        "vol_z",
-        "bars_since_new_high", "pullback_from_new_high_pct", "after_new_high_flag",
-        "context_bars_since_extreme", "context_pullback_pct", "context_after_extreme_flag",
-    ]
-    trades_df = pd.DataFrame(all_trades, columns=base_cols)
-
-    # paths (novo + compat)
-    out_trades_new = f"results/backtest_trades_{symbol}_{timeframe}_long.csv"
-    out_trades_compat = f"results/backtest_trades_{symbol}.csv"
-    trades_df.to_csv(out_trades_new, index=False)
-    trades_df.to_csv(out_trades_compat, index=False)
-
-    summary_df = build_summary(trades_df)
-    out_summary_new = f"results/backtest_summary_{symbol}_{timeframe}_long.csv"
-    out_summary_compat = f"results/backtest_summary_{symbol}.csv"
-    summary_df.to_csv(out_summary_new, index=False)
-    summary_df.to_csv(out_summary_compat, index=False)
-
-    print(f"Saved trades (new):    {out_trades_new}")
-    print(f"Saved trades (compat): {out_trades_compat}")
-    print(f"Saved summary (new):   {out_summary_new}")
-    print(f"Saved summary (compat):{out_summary_compat}")
-    print(f"Tick size used: {tick_size}")
-    print(f"Trades: {len(trades_df)}")
-
-
-if __name__ == "__main__":
-    main()
+    out["slope_strength"] = (out["sma8"] - 
