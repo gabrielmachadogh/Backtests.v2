@@ -8,21 +8,24 @@ on:
         required: true
         default: "BTC_USDT"
       timeframe:
-        description: "Timeframe (apenas 1h)"
+        description: "Timeframe"
         required: true
         default: "1h"
       min_trades:
-        description: "Min trades para relatórios de padrões"
+        description: "Min trades para relatórios"
         required: true
         default: "30"
       rr_list:
-        description: "Lista de RRs (CSV), ex: 1.0,1.5,2.0,3.0"
+        description: "RRs CSV"
         required: true
         default: "1.0,1.5,2.0,3.0"
       results_branch:
-        description: "Branch onde salvar results/"
+        description: "Branch para salvar results/"
         required: true
         default: "backtest-results"
+
+  schedule:
+    - cron: "0 3 * * *"
 
 permissions:
   contents: write
@@ -31,6 +34,14 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+
+    env:
+      # IMPORTANTÍSSIMO: no schedule, inputs.* é vazio -> usa defaults aqui
+      SYMBOL: ${{ inputs.symbol || 'BTC_USDT' }}
+      TIMEFRAME: ${{ inputs.timeframe || '1h' }}
+      MIN_TRADES: ${{ inputs.min_trades || '30' }}
+      RR_LIST: ${{ inputs.rr_list || '1.0,1.5,2.0,3.0' }}
+      RESULTS_BRANCH: ${{ inputs.results_branch || 'backtest-results' }}
 
     steps:
       - name: Checkout
@@ -47,6 +58,7 @@ jobs:
       - name: Install dependencies
         shell: bash
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
@@ -57,80 +69,66 @@ jobs:
       - name: Run backtest
         shell: bash
         working-directory: ${{ github.workspace }}
-        env:
-          PYTHONUNBUFFERED: "1"
         run: |
           set -euo pipefail
+          echo "PWD=$(pwd)"
           python backtest.py \
-            --symbol "${{ inputs.symbol }}" \
-            --timeframe "${{ inputs.timeframe }}" \
+            --symbol "$SYMBOL" \
+            --timeframe "$TIMEFRAME" \
             --only_long 1 \
             --max_entry_wait 1 \
-            --rr_list "${{ inputs.rr_list }}"
+            --rr_list "$RR_LIST"
 
-      - name: Debug - list generated files
+      - name: Debug - list results after backtest
         shell: bash
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          echo "PWD=$(pwd)"
-          echo "Tree (depth 3):"
-          find . -maxdepth 3 -type f | sort
-          echo ""
-          echo "Results folder:"
+          echo "List results/:"
           ls -la results || true
           echo ""
-          echo "Trades candidates:"
+          echo "Find trades files:"
           find . -type f -name "backtest_trades_*_long.csv" | sort || true
 
       - name: Run analyze patterns (auto-detect trades file)
         shell: bash
         working-directory: ${{ github.workspace }}
-        env:
-          PYTHONUNBUFFERED: "1"
         run: |
           set -euo pipefail
 
-          # tenta pegar exatamente o nome esperado
-          EXPECTED="results/backtest_trades_${{ inputs.symbol }}_${{ inputs.timeframe }}_long.csv"
+          EXPECTED="results/backtest_trades_${SYMBOL}_${TIMEFRAME}_long.csv"
           if [ -f "$EXPECTED" ]; then
             TRADES_FILE="$EXPECTED"
           else
-            # fallback: pega o primeiro CSV encontrado
             TRADES_FILE="$(find . -type f -name "backtest_trades_*_long.csv" | sort | head -n 1 || true)"
           fi
 
           if [ -z "${TRADES_FILE}" ] || [ ! -f "${TRADES_FILE}" ]; then
-            echo "ERRO: não encontrei o arquivo de trades. Veja listagem acima."
+            echo "ERRO: não encontrei nenhum backtest_trades_*_long.csv"
+            echo "Conteúdo de results/:"
+            ls -la results || true
             exit 1
           fi
 
           echo "Usando TRADES_FILE=${TRADES_FILE}"
-          python analyze_patterns.py \
-            --trades "${TRADES_FILE}" \
-            --min_trades "${{ inputs.min_trades }}"
+          python analyze_patterns.py --trades "${TRADES_FILE}" --min_trades "${MIN_TRADES}"
 
       - name: Commit results/ to results branch
         shell: bash
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          BRANCH="${{ inputs.results_branch }}"
-          SYMBOL="${{ inputs.symbol }}"
-          TF="${{ inputs.timeframe }}"
-          RR="${{ inputs.rr_list }}"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git checkout -B "$BRANCH"
+          git checkout -B "$RESULTS_BRANCH"
 
           git add results/
-
           if git diff --cached --quiet; then
             echo "No changes in results/. Nothing to commit."
             exit 0
           fi
 
-          git commit -m "Backtest ${SYMBOL} ${TF} long (RR=${RR}) [run ${GITHUB_RUN_ID}]"
-          git push origin "$BRANCH"
+          git commit -m "Backtest ${SYMBOL} ${TIMEFRAME} long (RR=${RR_LIST}) [run ${GITHUB_RUN_ID}]"
+          git push origin "$RESULTS_BRANCH"
