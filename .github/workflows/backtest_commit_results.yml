@@ -36,7 +36,6 @@ jobs:
     timeout-minutes: 60
 
     env:
-      # IMPORTANTÍSSIMO: no schedule, inputs.* é vazio -> usa defaults aqui
       SYMBOL: ${{ inputs.symbol || 'BTC_USDT' }}
       TIMEFRAME: ${{ inputs.timeframe || '1h' }}
       MIN_TRADES: ${{ inputs.min_trades || '30' }}
@@ -77,6 +76,7 @@ jobs:
             --timeframe "$TIMEFRAME" \
             --only_long 1 \
             --max_entry_wait 1 \
+            --tick_size 0.1 \
             --rr_list "$RR_LIST"
 
       - name: Debug - list results after backtest
@@ -87,31 +87,34 @@ jobs:
           echo "List results/:"
           ls -la results || true
           echo ""
-          echo "Find trades files:"
-          find . -type f -name "backtest_trades_*_long.csv" | sort || true
+          echo "Head summary:"
+          SUMMARY="results/backtest_summary_${SYMBOL}_${TIMEFRAME}_long.csv"
+          if [ -f "$SUMMARY" ]; then
+            head -n 50 "$SUMMARY" || true
+          else
+            echo "Summary not found: $SUMMARY"
+          fi
+          echo ""
+          echo "Head debug:"
+          DBG="results/backtest_debug_${SYMBOL}_${TIMEFRAME}_long.csv"
+          if [ -f "$DBG" ]; then
+            head -n 50 "$DBG" || true
+          else
+            echo "Debug not found: $DBG"
+          fi
 
-      - name: Run analyze patterns (auto-detect trades file)
+      - name: Run analyze patterns
         shell: bash
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-
-          EXPECTED="results/backtest_trades_${SYMBOL}_${TIMEFRAME}_long.csv"
-          if [ -f "$EXPECTED" ]; then
-            TRADES_FILE="$EXPECTED"
-          else
-            TRADES_FILE="$(find . -type f -name "backtest_trades_*_long.csv" | sort | head -n 1 || true)"
-          fi
-
-          if [ -z "${TRADES_FILE}" ] || [ ! -f "${TRADES_FILE}" ]; then
-            echo "ERRO: não encontrei nenhum backtest_trades_*_long.csv"
-            echo "Conteúdo de results/:"
+          TRADES_FILE="results/backtest_trades_${SYMBOL}_${TIMEFRAME}_long.csv"
+          if [ ! -f "$TRADES_FILE" ]; then
+            echo "ERRO: não encontrei $TRADES_FILE"
             ls -la results || true
             exit 1
           fi
-
-          echo "Usando TRADES_FILE=${TRADES_FILE}"
-          python analyze_patterns.py --trades "${TRADES_FILE}" --min_trades "${MIN_TRADES}"
+          python analyze_patterns.py --trades "$TRADES_FILE" --min_trades "$MIN_TRADES"
 
       - name: Commit results/ to results branch
         shell: bash
