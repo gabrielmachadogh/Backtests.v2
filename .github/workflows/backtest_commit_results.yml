@@ -1,4 +1,4 @@
-name: Backtest BTC 1h Long (commit results)
+name: Backtest BTC 1h Long (PFR OOS + Candidates)
 
 on:
   workflow_dispatch:
@@ -12,19 +12,19 @@ on:
         required: true
         default: "1h"
       min_trades_test:
-        description: "Min trades no teste (OOS) para aceitar um filtro"
+        description: "Min trades no teste (OOS) para aceitar filtro"
         required: true
         default: "40"
       min_trades_train:
-        description: "Min trades no treino (OOS) para aceitar um filtro"
+        description: "Min trades no treino (OOS) para aceitar filtro"
         required: true
         default: "120"
       test_frac:
-        description: "Fraçao do histórico usada como teste (ex: 0.2)"
+        description: "Fração do histórico usada como teste (ex: 0.2)"
         required: true
         default: "0.2"
       min_improvement_pp:
-        description: "Melhora mínima (pontos percentuais) no TESTE para considerar a variável útil"
+        description: "Melhora mínima (pontos percentuais) no TESTE para considerar variável útil"
         required: true
         default: "1.0"
       results_branch:
@@ -93,7 +93,7 @@ jobs:
             --tick_size 0.1 \
             --rr_list "1.0,1.5,2.0"
 
-      - name: Run OOS analysis (univariate + pairwise)
+      - name: Run OOS analysis (univariate + pairwise + redundant)
         shell: bash
         working-directory: ${{ github.workspace }}
         run: |
@@ -116,6 +116,20 @@ jobs:
             --max_pairwise_features 20 \
             --percentiles "10,15,20,25,30,40,50,60"
 
+      - name: Run OOS Candidates (fixed rules)
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          TRADES_FILE="results/backtest_trades_${SYMBOL}_${TIMEFRAME}_long.csv"
+          python evaluate_candidates.py \
+            --trades "$TRADES_FILE" \
+            --setup "PFR" \
+            --timeframe "$TIMEFRAME" \
+            --test_frac "$TEST_FRAC" \
+            --min_trades_train "$MIN_TRADES_TRAIN" \
+            --min_trades_test "$MIN_TRADES_TEST"
+
       - name: Generate results/LATEST.md
         shell: bash
         working-directory: ${{ github.workspace }}
@@ -130,11 +144,15 @@ jobs:
           SUMMARY="results/backtest_summary_${SYMBOL}_${TIMEFRAME}_long.csv"
           DEBUG="results/backtest_debug_${SYMBOL}_${TIMEFRAME}_long.csv"
 
+          OOS_BEST="results/oos_best_PFR_1h.md"
           OOS_BASE="results/oos_baseline_PFR_1h.csv"
           OOS_UNI="results/oos_univariate_PFR_1h.csv"
           OOS_PAIR="results/oos_pairwise_PFR_1h.csv"
           OOS_INCONC="results/oos_inconclusive_features_PFR_1h.csv"
-          OOS_BEST="results/oos_best_PFR_1h.md"
+          OOS_REDUND="results/oos_redundant_features_PFR_1h.csv"
+
+          CAND_CSV="results/oos_candidates_report_PFR_1h.csv"
+          CAND_MD="results/oos_candidates_best_PFR_1h.md"
 
           link() { echo "https://github.com/${REPO}/blob/${BRANCH}/$1"; }
 
@@ -146,24 +164,22 @@ jobs:
             echo "- Workflow run: ${RUN_URL}"
             echo "- UTC: $(date -u '+%Y-%m-%d %H:%M:%S')"
             echo
-            echo "## Arquivos (backtest)"
+            echo "## Backtest"
             echo "- Trades: $(link "${TRADES}")"
             echo "- Summary: $(link "${SUMMARY}")"
             echo "- Debug: $(link "${DEBUG}")"
             echo
-            echo "## Arquivos (OOS: sem overfitting)"
+            echo "## OOS (thresholds no treino)"
             echo "- OOS best (.md): $(link "${OOS_BEST}")"
             echo "- OOS baseline (.csv): $(link "${OOS_BASE}")"
             echo "- OOS univariate (.csv): $(link "${OOS_UNI}")"
             echo "- OOS pairwise (.csv): $(link "${OOS_PAIR}")"
             echo "- OOS inconclusive (.csv): $(link "${OOS_INCONC}")"
+            echo "- OOS redundant (features duplicadas removidas do pairwise): $(link "${OOS_REDUND}")"
             echo
-            echo "## Como usar"
-            echo "1) Abra o **OOS best** e veja os filtros com melhor **delta no TESTE**."
-            echo "2) Se uma variável cair em **inconclusive**, ignore ela."
-            echo "3) Compare regras antigas vs novas de topo pelos features:"
-            echo "   - antigo: after_new_high_flag / context_after_extreme_flag"
-            echo "   - novo: after_new_high_recent_flag / context_after_extreme_flag_v2 / pullback_from_new_high_atr"
+            echo "## Candidatos operacionais (regras FIXAS)"
+            echo "- Candidates best (.md): $(link "${CAND_MD}")"
+            echo "- Candidates report (.csv): $(link "${CAND_CSV}")"
             echo
           } > results/LATEST.md
 
@@ -200,5 +216,5 @@ jobs:
             exit 0
           fi
 
-          git commit -m "PFR ${SYMBOL} ${TIMEFRAME} long (RR=1/1.5/2, OOS) [run ${GITHUB_RUN_ID}]"
+          git commit -m "PFR ${SYMBOL} ${TIMEFRAME} OOS + Candidates (RR=1/1.5/2) [run ${GITHUB_RUN_ID}]"
           git push origin "$RESULTS_BRANCH"
