@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from pandas.util import hash_pandas_object
 
 
 def ensure_results_dir():
@@ -37,6 +38,7 @@ def get_feature_columns(trades_df: pd.DataFrame) -> List[str]:
         "entry", "stop", "risk", "rr", "tp",
         "outcome", "exit_reason", "fill_delay", "bars_in_trade",
         "win_rate_pct", "win_rate_pct_num",
+        "signal_time_dt",
     }
 
     numeric_cols = []
@@ -61,11 +63,6 @@ def time_split(df: pd.DataFrame, time_col: str, test_frac: float) -> Tuple[pd.Da
 
 
 def compute_threshold(series_train: pd.Series, mode: str, pct: int) -> Optional[float]:
-    """
-    mode:
-      - "low"  => threshold = quantile(pct/100)
-      - "high" => threshold = quantile(1 - pct/100)
-    """
     x = series_train.dropna()
     if len(x) < 20:
         return None
@@ -104,8 +101,6 @@ def oos_univariate(
 
     for feat in features:
         s_train = df_train[feat]
-        s_test = df_test[feat]
-
         if s_train.dropna().shape[0] < min_trades_train:
             continue
 
@@ -162,10 +157,6 @@ def pick_non_inconclusive_features(
     min_improvement_pp: float,
     max_features: int,
 ) -> List[str]:
-    """
-    Seleciona features que mostram melhora fora da amostra (delta_test >= min_improvement_pp)
-    e limita a quantidade (para pairwise não explodir).
-    """
     if uni_df.empty:
         return []
 
@@ -177,9 +168,7 @@ def pick_non_inconclusive_features(
 
     g = g.sort_values(["delta_vs_base_test_num", "trades_test"], ascending=[False, False])
     g = g[g["delta_vs_base_test_num"] >= min_improvement_pp]
-
-    feats = g["feature"].tolist()[:max_features]
-    return feats
+    return g["feature"].tolist()[:max_features]
 
 
 def compute_inconclusive_features(
@@ -187,11 +176,8 @@ def compute_inconclusive_features(
     all_features: List[str],
     min_improvement_pp: float,
 ) -> pd.DataFrame:
-    """
-    Marca como "inconclusiva" se não aparece com melhora >= min_improvement_pp no teste.
-    """
     if uni_df.empty:
-        return pd.DataFrame({"feature": all_features, "status": ["inconclusive"] * len(all_features)})
+        return pd.DataFrame({"feature": all_features, "best_delta_test_pp": [np.nan]*len(all_features), "status": ["inconclusive"]*len(all_features)})
 
     best = uni_df.groupby("feature")["delta_vs_base_test_num"].max().to_dict()
     rows = []
@@ -202,6 +188,43 @@ def compute_inconclusive_features(
         else:
             rows.append({"feature": f, "best_delta_test_pp": v, "status": "candidate"})
     return pd.DataFrame(rows).sort_values(["status", "best_delta_test_pp"], ascending=[True, False]).reset_index(drop=True)
+
+
+def dedup_features_by_hash(train_df: pd.DataFrame, features: List[str]) -> Tuple[List[str], pd.DataFrame]:
+    """
+    Remove features redundantes (idênticas) no TREINO via hash.
+    Retorna (features_unicas, df_relatorio_redundancia).
+    """
+    sig_map: Dict[int, str] = {}
+    keep: List[str] = []
+    rows = []
+
+    for f in features:
+        s = train_df[f]
+
+        # se for quase toda NaN ou constante, deixa passar (vai cair por min trades)
+        # mas ainda pode gerar hash; ok.
+        try:
+            # hash_pandas_object trata NaN consistentemente
+            h = int(hash_pandas_object(s, index=False).sum())
+        except Exception:
+            # se falhar, mantém
+            keep.append(f)
+            continue
+
+        if h not in sig_map:
+            sig_map[h] = f
+            keep.append(f)
+        else:
+            master = sig_map[h]
+            rows.append({
+                "feature_kept": master,
+                "feature_dropped": f,
+                "reason": "identical_hash_on_train",
+            })
+
+    rep = pd.DataFrame(rows)
+    return keep, rep
 
 
 def oos_pairwise_fixed_grid(
@@ -216,16 +239,8 @@ def oos_pairwise_fixed_grid(
     min_trades_train: int,
     min_trades_test: int,
 ) -> pd.DataFrame:
-    """
-    Pairwise com controle anti-overfitting:
-    - thresholds calculados SOMENTE no treino
-    - grade FIXA por feature: low20, low30, high20, high30
-    - não faz "optimize" em cima do teste; apenas reporta
-    """
     grid = [("low", 20), ("low", 30), ("high", 20), ("high", 30)]
-
     rows = []
-    # cache thresholds do treino para não recalcular
     thr_cache: Dict[Tuple[str, str, int], Optional[float]] = {}
 
     def get_thr(feat: str, mode: str, pct: int) -> Optional[float]:
@@ -303,7 +318,7 @@ def write_oos_best_md(
 ):
     lines = []
     lines.append("# OOS BEST (PFR 1h)\n\n")
-    lines.append("Este relatório usa **split temporal** (treino/teste). Thresholds são calculados **só no treino**.\n\n")
+    lines.append("Split temporal (treino/teste). Thresholds calculados **só no treino**.\n\n")
 
     lines.append("## Baseline (PFR cru)\n\n")
     if baseline_df.empty:
@@ -312,199 +327,4 @@ def write_oos_best_md(
         lines.append("| rr | trades_train | wr_train | trades_test | wr_test |\n")
         lines.append("|---:|---:|---:|---:|---:|\n")
         for _, r in baseline_df.iterrows():
-            lines.append(f"| {r['rr']} | {int(r['trades_train'])} | {r['win_rate_train']} | {int(r['trades_test'])} | {r['win_rate_test']} |\n")
-        lines.append("\n")
-
-    lines.append("## Top univariado (OOS)\n\n")
-    if uni_df.empty:
-        lines.append("(sem univariado)\n\n")
-    else:
-        top = uni_df.head(top_n)
-        lines.append("| rr | feature | mode | pct | threshold | trades_test | wr_test | delta_test |\n")
-        lines.append("|---:|---|---:|---:|---:|---:|---:|---:|\n")
-        for _, r in top.iterrows():
-            lines.append(
-                f"| {r['rr']} | {r['feature']} | {r['mode']} | {int(r['pct'])} | {r['threshold']:.6g} | {int(r['trades_test'])} | {r['win_rate_test']} | {r['delta_vs_base_test']} |\n"
-            )
-        lines.append("\n")
-
-    lines.append("## Top pairwise (OOS, grade fixa)\n\n")
-    if pair_df.empty:
-        lines.append("(sem pairwise)\n\n")
-    else:
-        top = pair_df.head(top_n)
-        lines.append("| rr | feature_a | a | feature_b | b | trades_test | wr_test | delta_test |\n")
-        lines.append("|---:|---|---:|---|---:|---:|---:|---:|\n")
-        for _, r in top.iterrows():
-            a = f"{r['mode_a']}{int(r['pct_a'])}@{r['threshold_a']:.6g}"
-            b = f"{r['mode_b']}{int(r['pct_b'])}@{r['threshold_b']:.6g}"
-            lines.append(
-                f"| {r['rr']} | {r['feature_a']} | {a} | {r['feature_b']} | {b} | {int(r['trades_test'])} | {r['win_rate_test']} | {r['delta_vs_base_test']} |\n"
-            )
-        lines.append("\n")
-
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.writelines(lines)
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--trades", type=str, required=True)
-    parser.add_argument("--setup", type=str, default="PFR")
-    parser.add_argument("--timeframe", type=str, default="1h")
-    parser.add_argument("--test_frac", type=float, default=0.2)
-    parser.add_argument("--min_trades_train", type=int, default=120)
-    parser.add_argument("--min_trades_test", type=int, default=40)
-    parser.add_argument("--min_improvement_pp", type=float, default=1.0)  # pp = pontos percentuais
-    parser.add_argument("--max_pairwise_features", type=int, default=20)
-    parser.add_argument("--percentiles", type=str, default="10,15,20,25,30,40,50,60")
-    args = parser.parse_args()
-
-    ensure_results_dir()
-
-    trades_df = pd.read_csv(args.trades)
-
-    if trades_df.empty:
-        # salva vazios
-        pd.DataFrame().to_csv("results/oos_baseline_PFR_1h.csv", index=False)
-        pd.DataFrame().to_csv("results/oos_univariate_PFR_1h.csv", index=False)
-        pd.DataFrame().to_csv("results/oos_pairwise_PFR_1h.csv", index=False)
-        pd.DataFrame().to_csv("results/oos_inconclusive_features_PFR_1h.csv", index=False)
-        with open("results/oos_best_PFR_1h.md", "w", encoding="utf-8") as f:
-            f.write("# OOS BEST (PFR 1h)\n\n(no trades)\n")
-        print("No trades. Saved empty OOS reports.")
-        return
-
-    if "outcome" not in trades_df.columns:
-        raise ValueError("CSV must contain 'outcome' column with values 'win'/'loss'.")
-
-    # parse signal_time for temporal split
-    if "signal_time" not in trades_df.columns:
-        raise ValueError("Missing signal_time in trades CSV.")
-    trades_df["signal_time_dt"] = pd.to_datetime(trades_df["signal_time"], utc=True, errors="coerce")
-
-    trades_df["rr"] = pd.to_numeric(trades_df["rr"], errors="coerce")
-    trades_df = trades_df.dropna(subset=["signal_time_dt", "rr"]).copy()
-
-    # filter setup/timeframe if present
-    if "setup" in trades_df.columns:
-        trades_df = trades_df[trades_df["setup"] == args.setup].copy()
-
-    if "timeframe" in trades_df.columns:
-        trades_df = trades_df[trades_df["timeframe"] == args.timeframe].copy()
-
-    if trades_df.empty:
-        raise ValueError("After filters (setup/timeframe), there are 0 trades.")
-
-    features = get_feature_columns(trades_df)
-    percentiles = [int(x.strip()) for x in args.percentiles.split(",") if x.strip()]
-
-    # outputs
-    baseline_rows = []
-    uni_rows_all = []
-    pair_rows_all = []
-
-    # OOS by RR
-    for rr_val, rr_grp in trades_df.groupby("rr", dropna=False):
-        rr_grp = rr_grp.sort_values("signal_time_dt").reset_index(drop=True)
-
-        train, test = time_split(rr_grp, "signal_time_dt", test_frac=args.test_frac)
-        t_tr, w_tr, l_tr, wr_tr = stats_from_outcome(train)
-        t_te, w_te, l_te, wr_te = stats_from_outcome(test)
-
-        baseline_rows.append({
-            "timeframe": args.timeframe,
-            "setup": args.setup,
-            "rr": rr_val,
-            "trades_train": t_tr,
-            "win_rate_train_num": wr_tr,
-            "win_rate_train": format_pct_ptbr(wr_tr, 1),
-            "trades_test": t_te,
-            "win_rate_test_num": wr_te,
-            "win_rate_test": format_pct_ptbr(wr_te, 1),
-        })
-
-        # univariado OOS
-        uni = oos_univariate(
-            df_train=train,
-            df_test=test,
-            baseline_train_wr=wr_tr,
-            baseline_test_wr=wr_te,
-            features=features,
-            percentiles=percentiles,
-            min_trades_train=args.min_trades_train,
-            min_trades_test=args.min_trades_test,
-            rr=rr_val,
-            timeframe=args.timeframe,
-            setup=args.setup,
-        )
-        if not uni.empty:
-            uni_rows_all.append(uni)
-
-        # para pairwise vamos decidir features depois (global), mas podemos guardar train/test por rr
-        # Aqui vamos apenas armazenar para rodar pairwise após selecionar features (por rr).
-        # Para não complicar, escolhemos features por RR usando o uni desse RR.
-        if not uni.empty:
-            candidates = pick_non_inconclusive_features(
-                uni_df=uni,
-                min_improvement_pp=args.min_improvement_pp,
-                max_features=args.max_pairwise_features,
-            )
-        else:
-            candidates = []
-
-        pair = oos_pairwise_fixed_grid(
-            df_train=train,
-            df_test=test,
-            baseline_train_wr=wr_tr,
-            baseline_test_wr=wr_te,
-            features=candidates,
-            rr=rr_val,
-            timeframe=args.timeframe,
-            setup=args.setup,
-            min_trades_train=args.min_trades_train,
-            min_trades_test=args.min_trades_test,
-        )
-        if not pair.empty:
-            pair_rows_all.append(pair)
-
-    baseline_df = pd.DataFrame(baseline_rows).sort_values(["rr"]).reset_index(drop=True)
-    uni_df = pd.concat(uni_rows_all, ignore_index=True) if uni_rows_all else pd.DataFrame()
-    pair_df = pd.concat(pair_rows_all, ignore_index=True) if pair_rows_all else pd.DataFrame()
-
-    # inconclusive list (global, baseado no uni concatenado)
-    inconc_df = compute_inconclusive_features(
-        uni_df=uni_df,
-        all_features=features,
-        min_improvement_pp=args.min_improvement_pp,
-    )
-
-    # save
-    baseline_path = "results/oos_baseline_PFR_1h.csv"
-    uni_path = "results/oos_univariate_PFR_1h.csv"
-    pair_path = "results/oos_pairwise_PFR_1h.csv"
-    inconc_path = "results/oos_inconclusive_features_PFR_1h.csv"
-    best_md_path = "results/oos_best_PFR_1h.md"
-
-    baseline_df.to_csv(baseline_path, index=False)
-    uni_df.to_csv(uni_path, index=False)
-    pair_df.to_csv(pair_path, index=False)
-    inconc_df.to_csv(inconc_path, index=False)
-
-    write_oos_best_md(
-        baseline_df=baseline_df,
-        uni_df=uni_df,
-        pair_df=pair_df,
-        out_path=best_md_path,
-        top_n=30,
-    )
-
-    print(f"Saved baseline:    {baseline_path} ({len(baseline_df)} rows)")
-    print(f"Saved univariate:  {uni_path} ({len(uni_df)} rows)")
-    print(f"Saved pairwise:    {pair_path} ({len(pair_df)} rows)")
-    print(f"Saved inconclusive:{inconc_path} ({len(inconc_df)} rows)")
-    print(f"Saved best md:     {best_md_path}")
-
-
-if __name__ == "__main__":
-    main()
+            lines.append(f"| {r['rr']} | {int(r['trades_train'])} | {r['win_rate_train']} | {int(r['trades_test'])} 
