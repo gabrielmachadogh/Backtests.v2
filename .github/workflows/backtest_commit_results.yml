@@ -121,6 +121,70 @@ jobs:
           fi
           python analyze_patterns.py --trades "$TRADES_FILE" --min_trades "$MIN_TRADES"
 
+      - name: Generate results/LATEST.md
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+
+          REPO="${GITHUB_REPOSITORY}"
+          RUN_URL="https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          BRANCH="${RESULTS_BRANCH}"
+
+          SUMMARY="results/backtest_summary_${SYMBOL}_${TIMEFRAME}_long.csv"
+          TRADES="results/backtest_trades_${SYMBOL}_${TIMEFRAME}_long.csv"
+          BEST="results/patterns_best_${SYMBOL}_${TIMEFRAME}_long.md"
+          UNI="results/patterns_univariate_${SYMBOL}_${TIMEFRAME}_long.csv"
+          PAIR="results/patterns_pairwise_${SYMBOL}_${TIMEFRAME}_long.csv"
+          DEBUG="results/backtest_debug_${SYMBOL}_${TIMEFRAME}_long.csv"
+
+          # Links diretos (na branch de results)
+          link() { echo "https://github.com/${REPO}/blob/${BRANCH}/$1"; }
+
+          {
+            echo "# LATEST (Backtest Results)"
+            echo
+            echo "- Repo: \`${REPO}\`"
+            echo "- Branch de resultados: \`${BRANCH}\`"
+            echo "- Workflow run: ${RUN_URL}"
+            echo "- Gerado em (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
+            echo
+            echo "## Arquivos principais"
+            echo
+            echo "- Summary: $(link "${SUMMARY}")"
+            echo "- Trades: $(link "${TRADES}")"
+            echo "- Patterns best (.md): $(link "${BEST}")"
+            echo "- Patterns univariate (.csv): $(link "${UNI}")"
+            echo "- Patterns pairwise (.csv): $(link "${PAIR}")"
+            echo "- Debug: $(link "${DEBUG}")"
+            echo
+            echo "## Resumo (winrate)"
+            echo
+          } > results/LATEST.md
+
+          # Adiciona uma tabela markdown simples (sem depender de tabulate)
+          python - << 'PY' >> results/LATEST.md
+import pandas as pd
+import os
+
+summary = os.environ.get("SUMMARY_PATH", "")
+if not summary:
+    summary = "results/backtest_summary_BTC_USDT_1h_long.csv"
+
+df = pd.read_csv(summary)
+cols = ["setup", "rr", "trades", "wins", "losses", "win_rate_pct"]
+df = df[cols]
+
+# markdown table manual
+print("| " + " | ".join(cols) + " |")
+print("|" + "|".join(["---"] * len(cols)) + "|")
+for _, r in df.iterrows():
+    row = [str(r[c]) for c in cols]
+    print("| " + " | ".join(row) + " |")
+PY
+        env:
+          SUMMARY_PATH: results/backtest_summary_${{ env.SYMBOL }}_${{ env.TIMEFRAME }}_long.csv
+
       - name: Commit results/ to results branch (checkout-safe)
         shell: bash
         working-directory: ${{ github.workspace }}
