@@ -506,4 +506,13 @@ def main():
         top_n=30,
     )
 
-    print(f"Saved baseline:    
+    print(f"Saved baseline:     {baseline_path} ({len(baseline_df)} rows)")
+    print(f"Saved univariate:   {uni_path} ({len(uni_df)} rows)")
+    print(f"Saved pairwise:     {pair_path} ({len(pair_df)} rows)")
+    print(f"Saved inconclusive: {inconc_path} ({len(inconc_df)} rows)")
+    print(f"Saved redundant:    {redund_path} ({len(redund_df)} rows)")
+    print(f"Saved best md:      {best_md_path}")
+
+
+if __name__ == "__main__":
+    main()
