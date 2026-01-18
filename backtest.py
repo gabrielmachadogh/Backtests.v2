@@ -2,27 +2,50 @@
 # -*- coding: utf-8 -*-
 
 """
-Backtest BTC_USDT perp (MEXC) - 1h - ONLY LONG - Setups: PFR + Dave Landry
+Backtest BTC_USDT perp (MEXC) - 1h - ONLY LONG - Setup: PFR ONLY
 
-Regras:
-- Trend (no candle do sinal i): close > SMA8, close > SMA80, SMA8 > SMA80
-- Slope obrigatório (no candle i): SMA8[i] > max(SMA8[i-8:i]) (8 anteriores)
-- Setups (candle i):
-  PFR long: low[i] < low[i-1] and low[i] < low[i-2] and close[i] > close[i-1]
-  DL  long: low[i] < low[i-1] and low[i] < low[i-2]
+Regras absolutas:
+- Trend (candle do sinal i): close > SMA8, close > SMA80, SMA8 > SMA80
+- Slope obrigatório (candle i): SMA8[i] > max(SMA8[i-8:i]) (8 anteriores)
+- PFR long (candle i):
+  low[i] < low[i-1] and low[i] < low[i-2]
+  close[i] > close[i-1]
   Entrada: buy stop em high[i] + 1 tick
 - Execução: MAX_ENTRY_WAIT_BARS=1 (só pode preencher no candle i+1)
 - Stop: low[i] - 1 tick
-- TP: entry + RR * risco, RR=[1.0,1.5,2.0,3.0]
+- TP: entry + RR * risco, RR=[1.0,1.5,2.0]
 - 1 trade por vez
 - Sem custos
 - Ambíguo (TP e SL no mesmo candle): LOSS
 
-Outputs (ambos):
-- results/backtest_trades_{symbol}_{timeframe}_long.csv  (novo)
-- results/backtest_trades_{symbol}.csv                  (compat)
-- results/backtest_summary_{symbol}_{timeframe}_long.csv (novo)
-- results/backtest_summary_{symbol}.csv                  (compat)
+Features gravadas no candle do sinal i (sem lookahead):
+- Trend/MA: sma8, sma80, ma_gap_pct, dist_to_sma80_pct, slope_strength
+- Volatilidade: ATR(14) Wilder, atr_pct
+- Candle: range/body/wicks, CLV etc.
+- Momentum: ret_1/3/5
+- RSI(14)
+- Estrutura N=20: pos_in_range_n, dist_to_high/low_n_pct etc.
+- Volume zscore 20: vol_z
+
+Contexto de topos (mantém antigo + novo):
+ANTIGO (v1) - mantém nomes para compatibilidade:
+- bars_since_new_high, pullback_from_new_high_pct, after_new_high_flag
+- context_bars_since_extreme, context_pullback_pct, context_after_extreme_flag
+
+NOVO (v2) - melhor (para comparar):
+- new_high_event (1 se high[i] > max(high[i-lookback:i-1]))
+- last_new_high (valor do último new high)
+- pullback_from_new_high_atr = (last_new_high - close)/ATR (estacionário)
+- after_new_high_recent_flag = 1 se bars_since_new_high entre 1..RECENT_EXTREME_MAX_BARS
+- context_after_extreme_flag_v2 (igual ao after_new_high_recent_flag)
+- context_pullback_atr (igual ao pullback_from_new_high_atr)
+
+Outputs:
+- results/backtest_trades_{symbol}_{timeframe}_long.csv (novo)
+- results/backtest_trades_{symbol}.csv (compat)
+- results/backtest_summary_{symbol}_{timeframe}_long.csv
+- results/backtest_summary_{symbol}.csv
+- results/backtest_debug_{symbol}_{timeframe}_long.csv
 """
 
 import os
@@ -43,6 +66,9 @@ ATR_PERIOD = 14
 RSI_PERIOD = 14
 STRUCT_N = 20
 EXTREME_LOOKBACK = 20
+
+# v2: define "after new high" como "houve um new high nos últimos K candles"
+RECENT_EXTREME_MAX_BARS = 12
 
 AMBIGUOUS_POLICY = "loss"  # conservative
 
@@ -72,53 +98,6 @@ def mexc_request(path: str, params: Optional[dict] = None, timeout: int = 30) ->
     r = requests.get(url, params=params or {}, timeout=timeout)
     r.raise_for_status()
     return r.json()
-
-
-def normalize_tick_size(raw: Optional[float]) -> float:
-    """
-    Heurística:
-    - Se vier um inteiro pequeno (ex.: 1,2,3...) pode ser 'precisão' em casas decimais.
-      Ex.: 1 => 0.1; 2 => 0.01; 3 => 0.001 ...
-    - Se vier float < 1, assume que já é tick.
-    """
-    if raw is None:
-        return float(DEFAULT_TICK_SIZE)
-
-    try:
-        v = float(raw)
-    except Exception:
-        return float(DEFAULT_TICK_SIZE)
-
-    if not np.isfinite(v) or v <= 0:
-        return float(DEFAULT_TICK_SIZE)
-
-    # provável "precision" (1..8) em vez de tick
-    if v >= 1 and v <= 8 and float(v).is_integer():
-        return float(10 ** (-int(v)))
-
-    return float(v)
-
-
-def get_tick_size_mexc_contract(symbol: str) -> Tuple[float, Optional[float]]:
-    """
-    Best-effort tick size fetch from MEXC Contract detail endpoint.
-    Returns: (tick_size_normalized, raw_value_if_found)
-    """
-    raw_val = None
-    try:
-        j = mexc_request("/api/v1/contract/detail", params={"symbol": symbol})
-        data = j.get("data", {}) if isinstance(j, dict) else {}
-        for k in ["priceUnit", "price_unit", "priceUnitPrecision", "price_unit_precision"]:
-            if k in data:
-                v = data[k]
-                if isinstance(v, (int, float)) and float(v) > 0:
-                    raw_val = float(v)
-                    break
-    except Exception:
-        raw_val = None
-
-    tick = normalize_tick_size(raw_val)
-    return tick, raw_val
 
 
 def _parse_kline_json(j: dict) -> pd.DataFrame:
@@ -262,14 +241,37 @@ def wilder_rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return 100 - (100 / (1 + rs))
 
 
-def add_new_high_context(df: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
+def add_new_high_context(df: pd.DataFrame, lookback: int = 20, recent_k: int = 12) -> pd.DataFrame:
+    """
+    Mantém o contexto antigo (v1) e adiciona v2.
+
+    v1 (mantido):
+    - bars_since_new_high
+    - pullback_from_new_high_pct
+    - after_new_high_flag (fica 1 depois de existir algum new high histórico)
+    - context_* (espelho do v1)
+
+    v2 (novo):
+    - new_high_event (candle i é um new high)
+    - last_new_high (valor do último new high)
+    - pullback_from_new_high_atr (estacionário)
+    - after_new_high_recent_flag = 1 se bars_since_new_high in [1..recent_k]
+    - context_after_extreme_flag_v2
+    - context_pullback_atr
+    """
     out = df.copy()
     highs = out["high"].astype(float).values
     closes = out["close"].astype(float).values
+    atr = out["atr"].astype(float).values if "atr" in out.columns else np.full(len(out), np.nan)
 
     bars_since = np.full(len(out), np.nan)
     pullback_pct = np.full(len(out), np.nan)
     after_flag = np.zeros(len(out), dtype=int)
+
+    new_high_event = np.zeros(len(out), dtype=int)
+    last_new_high_val = np.full(len(out), np.nan)
+    pullback_atr = np.full(len(out), np.nan)
+    after_recent_flag = np.zeros(len(out), dtype=int)
 
     last_new_high = np.nan
     last_new_high_idx = None
@@ -277,19 +279,41 @@ def add_new_high_context(df: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
     prev_roll_max = pd.Series(highs).shift(1).rolling(lookback, min_periods=lookback).max().values
 
     for i in range(len(out)):
+        # detect new high event
         if i >= lookback and not np.isnan(prev_roll_max[i]):
             if highs[i] > prev_roll_max[i]:
+                new_high_event[i] = 1
                 last_new_high = highs[i]
                 last_new_high_idx = i
 
+        # v1 state
         if last_new_high_idx is None:
             after_flag[i] = 0
+            bars_since[i] = np.nan
+            pullback_pct[i] = np.nan
+            last_new_high_val[i] = np.nan
+            pullback_atr[i] = np.nan
+            after_recent_flag[i] = 0
         else:
             after_flag[i] = 1
             bars_since[i] = i - last_new_high_idx
+            last_new_high_val[i] = last_new_high
+
             if last_new_high and not np.isnan(last_new_high) and last_new_high != 0:
                 pullback_pct[i] = (last_new_high - closes[i]) / last_new_high * 100.0
 
+            # v2: pullback em ATR
+            if np.isfinite(atr[i]) and atr[i] > 0 and np.isfinite(last_new_high):
+                pullback_atr[i] = (last_new_high - closes[i]) / atr[i]
+
+            # v2: recente = houve new high nos últimos K candles (exclui o próprio evento)
+            b = bars_since[i]
+            if np.isfinite(b) and 1 <= b <= recent_k:
+                after_recent_flag[i] = 1
+            else:
+                after_recent_flag[i] = 0
+
+    # v1 columns (mantidas)
     out["bars_since_new_high"] = bars_since
     out["pullback_from_new_high_pct"] = pullback_pct
     out["after_new_high_flag"] = after_flag
@@ -297,6 +321,16 @@ def add_new_high_context(df: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
     out["context_bars_since_extreme"] = out["bars_since_new_high"]
     out["context_pullback_pct"] = out["pullback_from_new_high_pct"]
     out["context_after_extreme_flag"] = out["after_new_high_flag"]
+
+    # v2 columns (novas)
+    out["new_high_event"] = new_high_event
+    out["last_new_high"] = last_new_high_val
+    out["pullback_from_new_high_atr"] = pullback_atr
+    out["after_new_high_recent_flag"] = after_recent_flag
+
+    out["context_after_extreme_flag_v2"] = out["after_new_high_recent_flag"]
+    out["context_pullback_atr"] = out["pullback_from_new_high_atr"]
+
     return out
 
 
@@ -347,27 +381,40 @@ def add_indicators_and_features(df: pd.DataFrame) -> pd.DataFrame:
     vol_std = vol.rolling(20, min_periods=20).std(ddof=0).replace(0, np.nan)
     out["vol_z"] = (vol - vol_mean) / vol_std
 
-    out = add_new_high_context(out, lookback=EXTREME_LOOKBACK)
+    out = add_new_high_context(out, lookback=EXTREME_LOOKBACK, recent_k=RECENT_EXTREME_MAX_BARS)
     return out
 
 
 def extract_feature_row(df: pd.DataFrame, i: int) -> Dict:
     cols = [
-        "sma8", "sma80",
-        "ma_gap_pct", "dist_to_sma80_pct", "slope_strength",
-        "atr", "atr_pct",
-        "range", "range_pct",
-        "body", "body_pct",
-        "upper_wick", "lower_wick",
-        "upper_wick_pct", "lower_wick_pct",
+        # MA / trend
+        "sma8", "sma80", "ma_gap_pct", "dist_to_sma80_pct", "slope_strength",
+
+        # vol/osc
+        "atr", "atr_pct", "rsi",
+
+        # candle
+        "range", "range_pct", "body", "body_pct",
+        "upper_wick", "lower_wick", "upper_wick_pct", "lower_wick_pct",
         "clv",
+
+        # momentum
         "ret_1_pct", "ret_3_pct", "ret_5_pct",
-        "rsi",
+
+        # structure
         "rolling_high_20", "rolling_low_20",
         "pos_in_range_n", "dist_to_high_n_pct", "dist_to_low_n_pct",
+
+        # volume
         "vol_z",
+
+        # extremes v1
         "bars_since_new_high", "pullback_from_new_high_pct", "after_new_high_flag",
         "context_bars_since_extreme", "context_pullback_pct", "context_after_extreme_flag",
+
+        # extremes v2
+        "new_high_event", "last_new_high", "pullback_from_new_high_atr", "after_new_high_recent_flag",
+        "context_after_extreme_flag_v2", "context_pullback_atr",
     ]
     return {c: (df.at[i, c] if c in df.columns else np.nan) for c in cols}
 
@@ -400,6 +447,7 @@ def simulate_exit_long(df: pd.DataFrame, entry_idx: int, stop: float, tp: float)
             return TradeResult(entry_idx, j, "loss", "sl")
         if hit_tp:
             return TradeResult(entry_idx, j, "win", "tp")
+
     return None
 
 
@@ -412,6 +460,7 @@ def backtest_one_rr(
     max_entry_wait_bars: int = 1,
 ) -> Tuple[List[Dict], Dict[str, int]]:
     """
+    PFR-only.
     Returns (trades, stats) for debugging.
     """
     trades: List[Dict] = []
@@ -421,9 +470,6 @@ def backtest_one_rr(
         "slope_ok": 0,
         "both_ok": 0,
         "pfr_signals": 0,
-        "dl_signals": 0,
-        "chosen_pfr": 0,
-        "chosen_dl": 0,
         "filled": 0,
         "exited": 0,
     }
@@ -457,27 +503,16 @@ def backtest_one_rr(
         low_i = float(df.at[i, "low"])
         low_1 = float(df.at[i - 1, "low"])
         low_2 = float(df.at[i - 2, "low"])
-        high_i = float(df.at[i, "high"])
         close_1 = float(df.at[i - 1, "close"])
 
         pfr_long = (low_i < low_1) and (low_i < low_2) and (close_i > close_1)
-        dl_long = (low_i < low_1) and (low_i < low_2)
-
-        if pfr_long:
-            stats["pfr_signals"] += 1
-        if dl_long:
-            stats["dl_signals"] += 1
-
-        setup = "PFR" if pfr_long else ("DL" if dl_long else None)
-        if setup is None:
+        if not pfr_long:
             i += 1
             continue
 
-        if setup == "PFR":
-            stats["chosen_pfr"] += 1
-        else:
-            stats["chosen_dl"] += 1
+        stats["pfr_signals"] += 1
 
+        high_i = float(df.at[i, "high"])
         entry = high_i + tick_size
         stop = low_i - tick_size
         risk = entry - stop
@@ -487,6 +522,7 @@ def backtest_one_rr(
 
         tp = entry + rr * risk
 
+        # only next bar fill (max_entry_wait_bars=1)
         filled = False
         fill_idx = None
         for wait in range(1, max_entry_wait_bars + 1):
@@ -515,7 +551,7 @@ def backtest_one_rr(
         trade = {
             "timeframe": timeframe,
             "symbol": symbol,
-            "setup": setup,
+            "setup": "PFR",
             "side": "long",
             "signal_time": df.at[i, "datetime"].isoformat(),
             "entry_time": df.at[fill_idx, "datetime"].isoformat(),
@@ -569,36 +605,24 @@ def main():
     parser.add_argument("--timeframe", type=str, default="1h")
     parser.add_argument("--only_long", type=int, default=1)
     parser.add_argument("--max_entry_wait", type=int, default=1)
-    parser.add_argument("--tick_size", type=float, default=None)
-    parser.add_argument("--rr_list", type=str, default="1.0,1.5,2.0,3.0")
+    parser.add_argument("--tick_size", type=float, default=0.1)
+    parser.add_argument("--rr_list", type=str, default="1.0,1.5,2.0")
     args = parser.parse_args()
 
     symbol = args.symbol
     timeframe = args.timeframe
     max_entry_wait = int(args.max_entry_wait)
     rr_list = [float(x.strip()) for x in args.rr_list.split(",") if x.strip()]
+    tick_size = float(args.tick_size)
 
     ensure_dirs()
 
     df = load_or_fetch_data(symbol=symbol, timeframe=timeframe)
     df = add_indicators_and_features(df)
 
-    # --- tick size
-    if args.tick_size is not None:
-        tick_size = float(args.tick_size)
-        tick_raw = None
-        tick_source = "cli"
-    else:
-        tick_size, tick_raw = get_tick_size_mexc_contract(symbol)
-        tick_source = "mexc"
-
-    # --- diagnostics about data
-    if len(df) > 0:
-        start_dt = df["datetime"].iloc[0]
-        end_dt = df["datetime"].iloc[-1]
-    else:
-        start_dt = None
-        end_dt = None
+    # diagnostics
+    start_dt = df["datetime"].iloc[0] if len(df) else None
+    end_dt = df["datetime"].iloc[-1] if len(df) else None
 
     print("=== DATA DIAGNOSTICS ===")
     print(f"symbol={symbol} timeframe={timeframe}")
@@ -606,7 +630,7 @@ def main():
     print(f"sma80_available={int(df['sma80'].notna().sum())}")
     print(f"slope_available={int(df['sma8_prev8_max'].notna().sum())}")
     print("=== TICK ===")
-    print(f"tick_source={tick_source} tick_raw={tick_raw} tick_size_used={tick_size}")
+    print(f"tick_size_used={tick_size}")
     print("========================")
 
     all_trades: List[Dict] = []
@@ -622,18 +646,17 @@ def main():
             max_entry_wait_bars=max_entry_wait,
         )
         all_trades.extend(trades_rr)
-
         stats_row = {"rr": rr}
         stats_row.update(stats)
         debug_rows.append(stats_row)
 
         print(f"=== RR {rr} STATS ===")
-        for k in ["checked", "trend_ok", "slope_ok", "both_ok", "pfr_signals", "dl_signals", "chosen_pfr", "chosen_dl", "filled", "exited"]:
+        for k in ["checked", "trend_ok", "slope_ok", "both_ok", "pfr_signals", "filled", "exited"]:
             print(f"{k}={stats.get(k)}")
         print(f"trades={len(trades_rr)}")
         print("=====================")
 
-    # garante header mesmo com 0 trades
+    # header garantido
     base_cols = [
         "timeframe", "symbol", "setup", "side",
         "signal_time", "entry_time", "exit_time",
@@ -641,24 +664,28 @@ def main():
         "entry", "stop", "risk", "rr", "tp",
         "outcome", "exit_reason",
         "fill_delay", "bars_in_trade",
+
+        # features
         "sma8", "sma80", "ma_gap_pct", "dist_to_sma80_pct", "slope_strength",
-        "atr", "atr_pct",
-        "range", "range_pct",
-        "body", "body_pct",
-        "upper_wick", "lower_wick",
-        "upper_wick_pct", "lower_wick_pct",
+        "atr", "atr_pct", "rsi",
+        "range", "range_pct", "body", "body_pct",
+        "upper_wick", "lower_wick", "upper_wick_pct", "lower_wick_pct",
         "clv",
         "ret_1_pct", "ret_3_pct", "ret_5_pct",
-        "rsi",
         "rolling_high_20", "rolling_low_20",
         "pos_in_range_n", "dist_to_high_n_pct", "dist_to_low_n_pct",
         "vol_z",
+
+        # extremes v1
         "bars_since_new_high", "pullback_from_new_high_pct", "after_new_high_flag",
         "context_bars_since_extreme", "context_pullback_pct", "context_after_extreme_flag",
+
+        # extremes v2
+        "new_high_event", "last_new_high", "pullback_from_new_high_atr", "after_new_high_recent_flag",
+        "context_after_extreme_flag_v2", "context_pullback_atr",
     ]
     trades_df = pd.DataFrame(all_trades, columns=base_cols)
 
-    # paths (novo + compat)
     out_trades_new = f"results/backtest_trades_{symbol}_{timeframe}_long.csv"
     out_trades_compat = f"results/backtest_trades_{symbol}.csv"
     trades_df.to_csv(out_trades_new, index=False)
@@ -670,15 +697,12 @@ def main():
     summary_df.to_csv(out_summary_new, index=False)
     summary_df.to_csv(out_summary_compat, index=False)
 
-    # debug stats CSV
     debug_df = pd.DataFrame(debug_rows)
     debug_path = f"results/backtest_debug_{symbol}_{timeframe}_long.csv"
     debug_df.to_csv(debug_path, index=False)
 
     print(f"Saved trades (new):     {out_trades_new}")
-    print(f"Saved trades (compat):  {out_trades_compat}")
     print(f"Saved summary (new):    {out_summary_new}")
-    print(f"Saved summary (compat): {out_summary_compat}")
     print(f"Saved debug:            {debug_path}")
     print(f"Trades total: {len(trades_df)}")
 
