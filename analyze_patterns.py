@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import os
 import argparse
 import itertools
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+
+
+def ensure_results_dir():
+    os.makedirs("results", exist_ok=True)
 
 
 def format_pct_ptbr(x: float, decimals: int = 1) -> str:
@@ -20,10 +25,7 @@ def is_binary_like(s: pd.Series) -> bool:
     v = s.dropna().unique()
     if len(v) == 0:
         return False
-    if len(v) <= 2:
-        # allow {0,1}, {False,True}, etc.
-        return True
-    return False
+    return len(v) <= 2
 
 
 def make_bins_quartiles(s: pd.Series) -> Optional[pd.Series]:
@@ -37,7 +39,6 @@ def make_bins_quartiles(s: pd.Series) -> Optional[pd.Series]:
         return None
     try:
         bins = pd.qcut(x, 4, labels=[0, 1, 2, 3], duplicates="drop")
-        # align back to original index
         out = pd.Series(index=s.index, dtype="float")
         out.loc[x.index] = bins.astype(float)
         return out
@@ -48,13 +49,11 @@ def make_bins_quartiles(s: pd.Series) -> Optional[pd.Series]:
 def make_bins_for_pairwise(s: pd.Series) -> Optional[pd.Series]:
     """
     For pairwise:
-    - if binary-like => use values (0/1) as bins
+    - if binary-like => use values as bins
     - else => quartiles (0..3)
     """
     if is_binary_like(s):
-        # cast to int bins (0/1)
         x = s.copy()
-        # normalize booleans
         if x.dropna().dtype == bool:
             x = x.astype(int)
         return x
@@ -76,9 +75,9 @@ def get_feature_columns(trades_df: pd.DataFrame) -> List[str]:
         "signal_idx", "entry_idx", "exit_idx",
         "entry", "stop", "risk", "rr", "tp",
         "outcome", "exit_reason", "fill_delay", "bars_in_trade",
-        # formatted columns if present
         "win_rate_pct", "win_rate_pct_num",
     }
+
     numeric_cols = []
     for c in trades_df.columns:
         if c in ignore:
@@ -101,7 +100,7 @@ def build_univariate_patterns(
         timeframe, setup, rr = keys
         grp = grp.copy()
 
-        # ALL (baseline)
+        # ALL baseline
         trades, wins, losses, wr = stats_from_outcome(grp)
         rows.append({
             "timeframe": timeframe,
@@ -176,6 +175,7 @@ def build_univariate_patterns(
     out = pd.DataFrame(rows)
     if out.empty:
         return out
+
     out = out.sort_values(["win_rate_pct_num", "trades"], ascending=[False, False]).reset_index(drop=True)
     return out
 
@@ -218,7 +218,6 @@ def build_pairwise_patterns(
             if len(tmp) < min_trades:
                 continue
 
-            # group by bin combo
             gb = tmp.groupby(["bin_a", "bin_b"], dropna=False)
             for (bin_a, bin_b), sub in gb:
                 t = int(len(sub))
@@ -246,6 +245,7 @@ def build_pairwise_patterns(
     out = pd.DataFrame(rows)
     if out.empty:
         return out
+
     out = out.sort_values(["win_rate_pct_num", "trades"], ascending=[False, False]).reset_index(drop=True)
     return out
 
@@ -257,12 +257,13 @@ def write_best_md(pairwise_df: pd.DataFrame, out_path: str, top_n: int = 30):
         return
 
     lines = []
-    lines.append("# patterns_best\n")
+    lines.append("# patterns_best\n\n")
 
     group_cols = ["timeframe", "setup", "rr"]
     for keys, grp in pairwise_df.groupby(group_cols, dropna=False):
         timeframe, setup, rr = keys
-        lines.append(f"## {timeframe} | {setup} | RR {rr}\n")
+        lines.append(f"## {timeframe} | {setup} | RR {rr}\n\n")
+
         gtop = grp.sort_values(["win_rate_pct_num", "trades"], ascending=[False, False]).head(top_n)
 
         lines.append("| feature_a | feature_b | bin_a | bin_b | trades | win_rate |\n")
@@ -283,26 +284,47 @@ def main():
     parser.add_argument("--min_trades", type=int, default=30)
     args = parser.parse_args()
 
+    ensure_results_dir()
+
     trades_df = pd.read_csv(args.trades)
 
-    # ensure outcome exists
-    if "outcome" not in trades_df.columns:
-        raise ValueError("CSV must contain 'outcome' column with 'win'/'loss'.")
+    if trades_df.empty:
+        # ainda assim gerar arquivos vazios com headers
+        base_name = os.path.basename(args.trades)
+        stem = base_name.replace("backtest_trades_", "").replace(".csv", "")
+        out_uni = f"results/patterns_univariate_{stem}.csv"
+        out_pair = f"results/patterns_pairwise_{stem}.csv"
+        out_best = f"results/patterns_best_{stem}.md"
 
-    # coerce rr to numeric
+        pd.DataFrame().to_csv(out_uni, index=False)
+        pd.DataFrame().to_csv(out_pair, index=False)
+        write_best_md(pd.DataFrame(), out_best, top_n=30)
+        print(f"No trades. Saved empty reports: {out_uni}, {out_pair}, {out_best}")
+        return
+
+    if "outcome" not in trades_df.columns:
+        raise ValueError("CSV must contain 'outcome' column with values 'win'/'loss'.")
+
+    # Coerce rr
     trades_df["rr"] = pd.to_numeric(trades_df["rr"], errors="coerce")
+
+    # Required grouping cols sanity
+    for c in ["timeframe", "setup"]:
+        if c not in trades_df.columns:
+            raise ValueError(f"Missing required column: {c}")
 
     features = get_feature_columns(trades_df)
 
     uni = build_univariate_patterns(trades_df, features, min_trades=args.min_trades)
     pair = build_pairwise_patterns(trades_df, features, min_trades=args.min_trades)
 
-    # Derive base name from input
-    # Expected: results/backtest_trades_BTC_USDT_1h_long.csv
-    base = args.trades.replace("backtest_trades_", "").replace(".csv", "")
-    out_uni = f"results/patterns_univariate_{base}.csv"
-    out_pair = f"results/patterns_pairwise_{base}.csv"
-    out_best = f"results/patterns_best_{base}.md"
+    # FIX: build output names from basename only (avoid results/results/... bug)
+    base_name = os.path.basename(args.trades)  # e.g. backtest_trades_BTC_USDT_1h_long.csv
+    stem = base_name.replace("backtest_trades_", "").replace(".csv", "")  # BTC_USDT_1h_long
+
+    out_uni = f"results/patterns_univariate_{stem}.csv"
+    out_pair = f"results/patterns_pairwise_{stem}.csv"
+    out_best = f"results/patterns_best_{stem}.md"
 
     uni.to_csv(out_uni, index=False)
     pair.to_csv(out_pair, index=False)
