@@ -11,14 +11,22 @@ on:
         description: "Timeframe"
         required: true
         default: "1h"
-      min_trades:
-        description: "Min trades para relatórios"
+      min_trades_test:
+        description: "Min trades no teste (OOS) para aceitar um filtro"
         required: true
-        default: "30"
-      rr_list:
-        description: "RRs CSV"
+        default: "40"
+      min_trades_train:
+        description: "Min trades no treino (OOS) para aceitar um filtro"
         required: true
-        default: "1.0,1.5,2.0,3.0"
+        default: "120"
+      test_frac:
+        description: "Fraçao do histórico usada como teste (ex: 0.2)"
+        required: true
+        default: "0.2"
+      min_improvement_pp:
+        description: "Melhora mínima (pontos percentuais) no TESTE para considerar a variável útil"
+        required: true
+        default: "1.0"
       results_branch:
         description: "Branch para salvar results/"
         required: true
@@ -27,7 +35,6 @@ on:
   schedule:
     - cron: "0 3 * * *"
 
-# Evita duas execuções concorrentes brigarem pelo push
 concurrency:
   group: backtest-results
   cancel-in-progress: true
@@ -43,9 +50,12 @@ jobs:
     env:
       SYMBOL: ${{ inputs.symbol || 'BTC_USDT' }}
       TIMEFRAME: ${{ inputs.timeframe || '1h' }}
-      MIN_TRADES: ${{ inputs.min_trades || '30' }}
-      RR_LIST: ${{ inputs.rr_list || '1.0,1.5,2.0,3.0' }}
       RESULTS_BRANCH: ${{ inputs.results_branch || 'backtest-results' }}
+
+      TEST_FRAC: ${{ inputs.test_frac || '0.2' }}
+      MIN_TRADES_TEST: ${{ inputs.min_trades_test || '40' }}
+      MIN_TRADES_TRAIN: ${{ inputs.min_trades_train || '120' }}
+      MIN_IMPROVEMENT_PP: ${{ inputs.min_improvement_pp || '1.0' }}
 
     steps:
       - name: Checkout
@@ -70,45 +80,20 @@ jobs:
             pip install pandas numpy requests
           fi
 
-      - name: Run backtest
+      - name: Run backtest (PFR only)
         shell: bash
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          echo "PWD=$(pwd)"
           python backtest.py \
             --symbol "$SYMBOL" \
             --timeframe "$TIMEFRAME" \
             --only_long 1 \
             --max_entry_wait 1 \
             --tick_size 0.1 \
-            --rr_list "$RR_LIST"
+            --rr_list "1.0,1.5,2.0"
 
-      - name: Debug - list results after backtest
-        shell: bash
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          echo "List results/:"
-          ls -la results || true
-          echo ""
-          echo "Head summary:"
-          SUMMARY="results/backtest_summary_${SYMBOL}_${TIMEFRAME}_long.csv"
-          if [ -f "$SUMMARY" ]; then
-            head -n 50 "$SUMMARY" || true
-          else
-            echo "Summary not found: $SUMMARY"
-          fi
-          echo ""
-          echo "Head debug:"
-          DBG="results/backtest_debug_${SYMBOL}_${TIMEFRAME}_long.csv"
-          if [ -f "$DBG" ]; then
-            head -n 50 "$DBG" || true
-          else
-            echo "Debug not found: $DBG"
-          fi
-
-      - name: Run analyze patterns
+      - name: Run OOS analysis (univariate + pairwise)
         shell: bash
         working-directory: ${{ github.workspace }}
         run: |
@@ -119,7 +104,17 @@ jobs:
             ls -la results || true
             exit 1
           fi
-          python analyze_patterns.py --trades "$TRADES_FILE" --min_trades "$MIN_TRADES"
+
+          python analyze_patterns.py \
+            --trades "$TRADES_FILE" \
+            --setup "PFR" \
+            --timeframe "$TIMEFRAME" \
+            --test_frac "$TEST_FRAC" \
+            --min_trades_train "$MIN_TRADES_TRAIN" \
+            --min_trades_test "$MIN_TRADES_TEST" \
+            --min_improvement_pp "$MIN_IMPROVEMENT_PP" \
+            --max_pairwise_features 20 \
+            --percentiles "10,15,20,25,30,40,50,60"
 
       - name: Generate results/LATEST.md
         shell: bash
@@ -131,59 +126,46 @@ jobs:
           RUN_URL="https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
           BRANCH="${RESULTS_BRANCH}"
 
-          SUMMARY="results/backtest_summary_${SYMBOL}_${TIMEFRAME}_long.csv"
           TRADES="results/backtest_trades_${SYMBOL}_${TIMEFRAME}_long.csv"
-          BEST="results/patterns_best_${SYMBOL}_${TIMEFRAME}_long.md"
-          UNI="results/patterns_univariate_${SYMBOL}_${TIMEFRAME}_long.csv"
-          PAIR="results/patterns_pairwise_${SYMBOL}_${TIMEFRAME}_long.csv"
+          SUMMARY="results/backtest_summary_${SYMBOL}_${TIMEFRAME}_long.csv"
           DEBUG="results/backtest_debug_${SYMBOL}_${TIMEFRAME}_long.csv"
 
-          # Links diretos (na branch de results)
+          OOS_BASE="results/oos_baseline_PFR_1h.csv"
+          OOS_UNI="results/oos_univariate_PFR_1h.csv"
+          OOS_PAIR="results/oos_pairwise_PFR_1h.csv"
+          OOS_INCONC="results/oos_inconclusive_features_PFR_1h.csv"
+          OOS_BEST="results/oos_best_PFR_1h.md"
+
           link() { echo "https://github.com/${REPO}/blob/${BRANCH}/$1"; }
 
           {
-            echo "# LATEST (Backtest Results)"
+            echo "# LATEST (PFR 1h | RR 1.0/1.5/2.0)"
             echo
             echo "- Repo: \`${REPO}\`"
             echo "- Branch de resultados: \`${BRANCH}\`"
             echo "- Workflow run: ${RUN_URL}"
-            echo "- Gerado em (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
+            echo "- UTC: $(date -u '+%Y-%m-%d %H:%M:%S')"
             echo
-            echo "## Arquivos principais"
-            echo
-            echo "- Summary: $(link "${SUMMARY}")"
+            echo "## Arquivos (backtest)"
             echo "- Trades: $(link "${TRADES}")"
-            echo "- Patterns best (.md): $(link "${BEST}")"
-            echo "- Patterns univariate (.csv): $(link "${UNI}")"
-            echo "- Patterns pairwise (.csv): $(link "${PAIR}")"
+            echo "- Summary: $(link "${SUMMARY}")"
             echo "- Debug: $(link "${DEBUG}")"
             echo
-            echo "## Resumo (winrate)"
+            echo "## Arquivos (OOS: sem overfitting)"
+            echo "- OOS best (.md): $(link "${OOS_BEST}")"
+            echo "- OOS baseline (.csv): $(link "${OOS_BASE}")"
+            echo "- OOS univariate (.csv): $(link "${OOS_UNI}")"
+            echo "- OOS pairwise (.csv): $(link "${OOS_PAIR}")"
+            echo "- OOS inconclusive (.csv): $(link "${OOS_INCONC}")"
+            echo
+            echo "## Como usar"
+            echo "1) Abra o **OOS best** e veja os filtros com melhor **delta no TESTE**."
+            echo "2) Se uma variável cair em **inconclusive**, ignore ela."
+            echo "3) Compare regras antigas vs novas de topo pelos features:"
+            echo "   - antigo: after_new_high_flag / context_after_extreme_flag"
+            echo "   - novo: after_new_high_recent_flag / context_after_extreme_flag_v2 / pullback_from_new_high_atr"
             echo
           } > results/LATEST.md
-
-          # Adiciona uma tabela markdown simples (sem depender de tabulate)
-          python - << 'PY' >> results/LATEST.md
-import pandas as pd
-import os
-
-summary = os.environ.get("SUMMARY_PATH", "")
-if not summary:
-    summary = "results/backtest_summary_BTC_USDT_1h_long.csv"
-
-df = pd.read_csv(summary)
-cols = ["setup", "rr", "trades", "wins", "losses", "win_rate_pct"]
-df = df[cols]
-
-# markdown table manual
-print("| " + " | ".join(cols) + " |")
-print("|" + "|".join(["---"] * len(cols)) + "|")
-for _, r in df.iterrows():
-    row = [str(r[c]) for c in cols]
-    print("| " + " | ".join(row) + " |")
-PY
-        env:
-          SUMMARY_PATH: results/backtest_summary_${{ env.SYMBOL }}_${{ env.TIMEFRAME }}_long.csv
 
       - name: Commit results/ to results branch (checkout-safe)
         shell: bash
@@ -191,20 +173,16 @@ PY
         run: |
           set -euo pipefail
 
-          # 1) Snapshot fora do repo
           rm -rf /tmp/results_snapshot
           mkdir -p /tmp/results_snapshot
           cp -r results /tmp/results_snapshot/results
 
-          # 2) Limpa working tree para permitir checkout (remove tracked changes e untracked)
           git reset --hard
           git clean -fd
 
-          # 3) Config git user
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # 4) Atualiza remoto e faz checkout baseado na ponta remota (se existir)
           git fetch origin "$RESULTS_BRANCH" || true
 
           if git show-ref --verify --quiet "refs/remotes/origin/${RESULTS_BRANCH}"; then
@@ -213,16 +191,14 @@ PY
             git checkout -B "$RESULTS_BRANCH"
           fi
 
-          # 5) Restaura results do snapshot
           rm -rf results
           cp -r /tmp/results_snapshot/results results
 
-          # 6) Commit/push
           git add results/
           if git diff --cached --quiet; then
             echo "No changes in results/. Nothing to commit."
             exit 0
           fi
 
-          git commit -m "Backtest ${SYMBOL} ${TIMEFRAME} long (RR=${RR_LIST}) [run ${GITHUB_RUN_ID}]"
+          git commit -m "PFR ${SYMBOL} ${TIMEFRAME} long (RR=1/1.5/2, OOS) [run ${GITHUB_RUN_ID}]"
           git push origin "$RESULTS_BRANCH"
