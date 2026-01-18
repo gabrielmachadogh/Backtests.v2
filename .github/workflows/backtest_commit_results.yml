@@ -121,34 +121,39 @@ jobs:
           fi
           python analyze_patterns.py --trades "$TRADES_FILE" --min_trades "$MIN_TRADES"
 
-      - name: Commit results/ to results branch (fast-forward safe)
+      - name: Commit results/ to results branch (checkout-safe)
         shell: bash
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
 
-          # guarda results gerado antes de trocar branch
+          # 1) Snapshot fora do repo
           rm -rf /tmp/results_snapshot
           mkdir -p /tmp/results_snapshot
           cp -r results /tmp/results_snapshot/results
 
+          # 2) Limpa working tree para permitir checkout (remove tracked changes e untracked)
+          git reset --hard
+          git clean -fd
+
+          # 3) Config git user
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # garante que sabemos o estado do remoto
+          # 4) Atualiza remoto e faz checkout baseado na ponta remota (se existir)
           git fetch origin "$RESULTS_BRANCH" || true
 
-          # faz checkout baseado na ponta remota (se existir)
           if git show-ref --verify --quiet "refs/remotes/origin/${RESULTS_BRANCH}"; then
             git checkout -B "$RESULTS_BRANCH" "origin/${RESULTS_BRANCH}"
           else
             git checkout -B "$RESULTS_BRANCH"
           fi
 
-          # restaura results atualizado (substitui tudo)
+          # 5) Restaura results do snapshot
           rm -rf results
           cp -r /tmp/results_snapshot/results results
 
+          # 6) Commit/push
           git add results/
           if git diff --cached --quiet; then
             echo "No changes in results/. Nothing to commit."
@@ -156,6 +161,4 @@ jobs:
           fi
 
           git commit -m "Backtest ${SYMBOL} ${TIMEFRAME} long (RR=${RR_LIST}) [run ${GITHUB_RUN_ID}]"
-
-          # agora é fast-forward (ou criação de branch), não deve rejeitar
           git push origin "$RESULTS_BRANCH"
