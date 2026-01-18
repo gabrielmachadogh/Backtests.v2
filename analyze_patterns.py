@@ -21,45 +21,6 @@ def format_pct_ptbr(x: float, decimals: int = 1) -> str:
     return f"{s}%"
 
 
-def is_binary_like(s: pd.Series) -> bool:
-    v = s.dropna().unique()
-    if len(v) == 0:
-        return False
-    return len(v) <= 2
-
-
-def make_bins_quartiles(s: pd.Series) -> Optional[pd.Series]:
-    """
-    Returns bin labels 0..3 using qcut (quartiles). If not possible, returns None.
-    """
-    x = s.dropna()
-    if len(x) < 10:
-        return None
-    if x.nunique() < 4:
-        return None
-    try:
-        bins = pd.qcut(x, 4, labels=[0, 1, 2, 3], duplicates="drop")
-        out = pd.Series(index=s.index, dtype="float")
-        out.loc[x.index] = bins.astype(float)
-        return out
-    except Exception:
-        return None
-
-
-def make_bins_for_pairwise(s: pd.Series) -> Optional[pd.Series]:
-    """
-    For pairwise:
-    - if binary-like => use values as bins
-    - else => quartiles (0..3)
-    """
-    if is_binary_like(s):
-        x = s.copy()
-        if x.dropna().dtype == bool:
-            x = x.astype(int)
-        return x
-    return make_bins_quartiles(s)
-
-
 def stats_from_outcome(df: pd.DataFrame) -> Tuple[int, int, int, float]:
     trades = int(len(df))
     wins = int((df["outcome"] == "win").sum())
@@ -87,190 +48,298 @@ def get_feature_columns(trades_df: pd.DataFrame) -> List[str]:
     return numeric_cols
 
 
-def build_univariate_patterns(
-    trades_df: pd.DataFrame,
+def time_split(df: pd.DataFrame, time_col: str, test_frac: float) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    df = df.sort_values(time_col).reset_index(drop=True)
+    n = len(df)
+    if n == 0:
+        return df.copy(), df.copy()
+    cut = int(np.floor(n * (1.0 - test_frac)))
+    cut = max(1, min(cut, n - 1))
+    train = df.iloc[:cut].copy()
+    test = df.iloc[cut:].copy()
+    return train, test
+
+
+def compute_threshold(series_train: pd.Series, mode: str, pct: int) -> Optional[float]:
+    """
+    mode:
+      - "low"  => threshold = quantile(pct/100)
+      - "high" => threshold = quantile(1 - pct/100)
+    """
+    x = series_train.dropna()
+    if len(x) < 20:
+        return None
+    if x.nunique() < 2:
+        return None
+
+    if mode == "low":
+        return float(x.quantile(pct / 100.0))
+    if mode == "high":
+        return float(x.quantile(1.0 - pct / 100.0))
+    raise ValueError("mode must be 'low' or 'high'")
+
+
+def apply_filter(df: pd.DataFrame, feature: str, mode: str, threshold: float) -> pd.DataFrame:
+    if mode == "low":
+        return df[df[feature] <= threshold]
+    if mode == "high":
+        return df[df[feature] >= threshold]
+    raise ValueError("mode must be 'low' or 'high'")
+
+
+def oos_univariate(
+    df_train: pd.DataFrame,
+    df_test: pd.DataFrame,
+    baseline_train_wr: float,
+    baseline_test_wr: float,
     features: List[str],
-    min_trades: int,
-    pct_buckets: List[int] = [10, 15, 20, 25, 30, 40, 50, 60],
+    percentiles: List[int],
+    min_trades_train: int,
+    min_trades_test: int,
+    rr: float,
+    timeframe: str,
+    setup: str,
 ) -> pd.DataFrame:
     rows = []
 
-    group_cols = ["timeframe", "setup", "rr"]
-    for keys, grp in trades_df.groupby(group_cols, dropna=False):
-        timeframe, setup, rr = keys
-        grp = grp.copy()
+    for feat in features:
+        s_train = df_train[feat]
+        s_test = df_test[feat]
 
-        # ALL baseline
-        trades, wins, losses, wr = stats_from_outcome(grp)
-        rows.append({
-            "timeframe": timeframe,
-            "setup": setup,
-            "rr": rr,
-            "feature": "__ALL__",
-            "bucket": "ALL",
-            "trades": trades,
-            "wins": wins,
-            "losses": losses,
-            "win_rate_pct_num": wr,
-            "win_rate_pct": format_pct_ptbr(wr, 1),
-        })
+        if s_train.dropna().shape[0] < min_trades_train:
+            continue
 
-        for feat in features:
-            s = grp[feat]
-            if s.dropna().shape[0] < min_trades:
-                continue
-
-            # Quartiles
-            qbins = make_bins_quartiles(s)
-            if qbins is not None:
-                tmp = grp.copy()
-                tmp["bin"] = qbins
-                tmp = tmp.dropna(subset=["bin"])
-                for b, sub in tmp.groupby("bin", dropna=False):
-                    t, w, l, wrb = stats_from_outcome(sub)
-                    if t < min_trades:
-                        continue
-                    rows.append({
-                        "timeframe": timeframe,
-                        "setup": setup,
-                        "rr": rr,
-                        "feature": feat,
-                        "bucket": f"quartile_{int(b)}",
-                        "trades": t,
-                        "wins": w,
-                        "losses": l,
-                        "win_rate_pct_num": wrb,
-                        "win_rate_pct": format_pct_ptbr(wrb, 1),
-                    })
-
-            # Top/Low percent buckets
-            x = s.dropna()
-            if len(x) < min_trades:
-                continue
-
-            for p in pct_buckets:
-                q_low = x.quantile(p / 100.0)
-                q_high = x.quantile(1.0 - p / 100.0)
-
-                low_sub = grp[grp[feat] <= q_low]
-                top_sub = grp[grp[feat] >= q_high]
-
-                for name, sub in [(f"low{p}", low_sub), (f"top{p}", top_sub)]:
-                    t, w, l, wrb = stats_from_outcome(sub)
-                    if t < min_trades:
-                        continue
-                    rows.append({
-                        "timeframe": timeframe,
-                        "setup": setup,
-                        "rr": rr,
-                        "feature": feat,
-                        "bucket": name,
-                        "trades": t,
-                        "wins": w,
-                        "losses": l,
-                        "win_rate_pct_num": wrb,
-                        "win_rate_pct": format_pct_ptbr(wrb, 1),
-                    })
-
-    out = pd.DataFrame(rows)
-    if out.empty:
-        return out
-
-    out = out.sort_values(["win_rate_pct_num", "trades"], ascending=[False, False]).reset_index(drop=True)
-    return out
-
-
-def build_pairwise_patterns(
-    trades_df: pd.DataFrame,
-    features: List[str],
-    min_trades: int,
-) -> pd.DataFrame:
-    rows = []
-    group_cols = ["timeframe", "setup", "rr"]
-
-    for keys, grp in trades_df.groupby(group_cols, dropna=False):
-        timeframe, setup, rr = keys
-        grp = grp.copy()
-
-        # precompute bins per feature for this group
-        bins_map: Dict[str, Optional[pd.Series]] = {}
-        for f in features:
-            if grp[f].dropna().shape[0] < min_trades:
-                bins_map[f] = None
-                continue
-            bins_map[f] = make_bins_for_pairwise(grp[f])
-
-        feats_valid = [f for f in features if bins_map.get(f) is not None]
-
-        for a, b in itertools.combinations(feats_valid, 2):
-            ba = bins_map[a]
-            bb = bins_map[b]
-            if ba is None or bb is None:
-                continue
-
-            tmp = grp[["outcome"]].copy()
-            tmp["feature_a"] = a
-            tmp["feature_b"] = b
-            tmp["bin_a"] = ba
-            tmp["bin_b"] = bb
-            tmp = tmp.dropna(subset=["bin_a", "bin_b"])
-
-            if len(tmp) < min_trades:
-                continue
-
-            gb = tmp.groupby(["bin_a", "bin_b"], dropna=False)
-            for (bin_a, bin_b), sub in gb:
-                t = int(len(sub))
-                if t < min_trades:
+        for pct in percentiles:
+            for mode in ["low", "high"]:
+                thr = compute_threshold(s_train, mode=mode, pct=pct)
+                if thr is None:
                     continue
-                wins = int((sub["outcome"] == "win").sum())
-                losses = t - wins
-                wr = (wins / t) * 100.0 if t > 0 else np.nan
+
+                sub_train = apply_filter(df_train, feat, mode, thr)
+                sub_test = apply_filter(df_test, feat, mode, thr)
+
+                t_tr, w_tr, l_tr, wr_tr = stats_from_outcome(sub_train)
+                t_te, w_te, l_te, wr_te = stats_from_outcome(sub_test)
+
+                if t_tr < min_trades_train or t_te < min_trades_test:
+                    continue
 
                 rows.append({
                     "timeframe": timeframe,
                     "setup": setup,
                     "rr": rr,
-                    "feature_a": a,
-                    "feature_b": b,
-                    "bin_a": bin_a,
-                    "bin_b": bin_b,
-                    "trades": t,
-                    "wins": wins,
-                    "losses": losses,
-                    "win_rate_pct_num": wr,
-                    "win_rate_pct": format_pct_ptbr(wr, 1),
+                    "feature": feat,
+                    "mode": mode,
+                    "pct": pct,
+                    "threshold": thr,
+                    "trades_train": t_tr,
+                    "win_rate_train_num": wr_tr,
+                    "win_rate_train": format_pct_ptbr(wr_tr, 1),
+                    "delta_vs_base_train_num": wr_tr - baseline_train_wr,
+                    "delta_vs_base_train": format_pct_ptbr(wr_tr - baseline_train_wr, 1),
+
+                    "trades_test": t_te,
+                    "win_rate_test_num": wr_te,
+                    "win_rate_test": format_pct_ptbr(wr_te, 1),
+                    "delta_vs_base_test_num": wr_te - baseline_test_wr,
+                    "delta_vs_base_test": format_pct_ptbr(wr_te - baseline_test_wr, 1),
                 })
 
     out = pd.DataFrame(rows)
     if out.empty:
         return out
 
-    out = out.sort_values(["win_rate_pct_num", "trades"], ascending=[False, False]).reset_index(drop=True)
+    out = out.sort_values(
+        ["delta_vs_base_test_num", "trades_test", "win_rate_test_num"],
+        ascending=[False, False, False]
+    ).reset_index(drop=True)
+
     return out
 
 
-def write_best_md(pairwise_df: pd.DataFrame, out_path: str, top_n: int = 30):
-    if pairwise_df.empty:
-        with open(out_path, "w", encoding="utf-8") as f:
-            f.write("# patterns_best\n\n(no patterns)\n")
-        return
+def pick_non_inconclusive_features(
+    uni_df: pd.DataFrame,
+    min_improvement_pp: float,
+    max_features: int,
+) -> List[str]:
+    """
+    Seleciona features que mostram melhora fora da amostra (delta_test >= min_improvement_pp)
+    e limita a quantidade (para pairwise não explodir).
+    """
+    if uni_df.empty:
+        return []
 
+    g = uni_df.groupby("feature", dropna=False).agg({
+        "delta_vs_base_test_num": "max",
+        "trades_test": "max",
+        "win_rate_test_num": "max",
+    }).reset_index()
+
+    g = g.sort_values(["delta_vs_base_test_num", "trades_test"], ascending=[False, False])
+    g = g[g["delta_vs_base_test_num"] >= min_improvement_pp]
+
+    feats = g["feature"].tolist()[:max_features]
+    return feats
+
+
+def compute_inconclusive_features(
+    uni_df: pd.DataFrame,
+    all_features: List[str],
+    min_improvement_pp: float,
+) -> pd.DataFrame:
+    """
+    Marca como "inconclusiva" se não aparece com melhora >= min_improvement_pp no teste.
+    """
+    if uni_df.empty:
+        return pd.DataFrame({"feature": all_features, "status": ["inconclusive"] * len(all_features)})
+
+    best = uni_df.groupby("feature")["delta_vs_base_test_num"].max().to_dict()
+    rows = []
+    for f in all_features:
+        v = best.get(f, None)
+        if v is None or (not np.isfinite(v)) or v < min_improvement_pp:
+            rows.append({"feature": f, "best_delta_test_pp": v, "status": "inconclusive"})
+        else:
+            rows.append({"feature": f, "best_delta_test_pp": v, "status": "candidate"})
+    return pd.DataFrame(rows).sort_values(["status", "best_delta_test_pp"], ascending=[True, False]).reset_index(drop=True)
+
+
+def oos_pairwise_fixed_grid(
+    df_train: pd.DataFrame,
+    df_test: pd.DataFrame,
+    baseline_train_wr: float,
+    baseline_test_wr: float,
+    features: List[str],
+    rr: float,
+    timeframe: str,
+    setup: str,
+    min_trades_train: int,
+    min_trades_test: int,
+) -> pd.DataFrame:
+    """
+    Pairwise com controle anti-overfitting:
+    - thresholds calculados SOMENTE no treino
+    - grade FIXA por feature: low20, low30, high20, high30
+    - não faz "optimize" em cima do teste; apenas reporta
+    """
+    grid = [("low", 20), ("low", 30), ("high", 20), ("high", 30)]
+
+    rows = []
+    # cache thresholds do treino para não recalcular
+    thr_cache: Dict[Tuple[str, str, int], Optional[float]] = {}
+
+    def get_thr(feat: str, mode: str, pct: int) -> Optional[float]:
+        k = (feat, mode, pct)
+        if k in thr_cache:
+            return thr_cache[k]
+        thr_cache[k] = compute_threshold(df_train[feat], mode, pct)
+        return thr_cache[k]
+
+    for a, b in itertools.combinations(features, 2):
+        for (mode_a, pct_a) in grid:
+            thr_a = get_thr(a, mode_a, pct_a)
+            if thr_a is None:
+                continue
+            train_a = apply_filter(df_train, a, mode_a, thr_a)
+            test_a = apply_filter(df_test, a, mode_a, thr_a)
+
+            for (mode_b, pct_b) in grid:
+                thr_b = get_thr(b, mode_b, pct_b)
+                if thr_b is None:
+                    continue
+                train_ab = apply_filter(train_a, b, mode_b, thr_b)
+                test_ab = apply_filter(test_a, b, mode_b, thr_b)
+
+                t_tr, w_tr, l_tr, wr_tr = stats_from_outcome(train_ab)
+                t_te, w_te, l_te, wr_te = stats_from_outcome(test_ab)
+
+                if t_tr < min_trades_train or t_te < min_trades_test:
+                    continue
+
+                rows.append({
+                    "timeframe": timeframe,
+                    "setup": setup,
+                    "rr": rr,
+                    "feature_a": a,
+                    "mode_a": mode_a,
+                    "pct_a": pct_a,
+                    "threshold_a": thr_a,
+                    "feature_b": b,
+                    "mode_b": mode_b,
+                    "pct_b": pct_b,
+                    "threshold_b": thr_b,
+
+                    "trades_train": t_tr,
+                    "win_rate_train_num": wr_tr,
+                    "win_rate_train": format_pct_ptbr(wr_tr, 1),
+                    "delta_vs_base_train_num": wr_tr - baseline_train_wr,
+                    "delta_vs_base_train": format_pct_ptbr(wr_tr - baseline_train_wr, 1),
+
+                    "trades_test": t_te,
+                    "win_rate_test_num": wr_te,
+                    "win_rate_test": format_pct_ptbr(wr_te, 1),
+                    "delta_vs_base_test_num": wr_te - baseline_test_wr,
+                    "delta_vs_base_test": format_pct_ptbr(wr_te - baseline_test_wr, 1),
+                })
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+
+    out = out.sort_values(
+        ["delta_vs_base_test_num", "trades_test", "win_rate_test_num"],
+        ascending=[False, False, False]
+    ).reset_index(drop=True)
+
+    return out
+
+
+def write_oos_best_md(
+    baseline_df: pd.DataFrame,
+    uni_df: pd.DataFrame,
+    pair_df: pd.DataFrame,
+    out_path: str,
+    top_n: int = 30,
+):
     lines = []
-    lines.append("# patterns_best\n\n")
+    lines.append("# OOS BEST (PFR 1h)\n\n")
+    lines.append("Este relatório usa **split temporal** (treino/teste). Thresholds são calculados **só no treino**.\n\n")
 
-    group_cols = ["timeframe", "setup", "rr"]
-    for keys, grp in pairwise_df.groupby(group_cols, dropna=False):
-        timeframe, setup, rr = keys
-        lines.append(f"## {timeframe} | {setup} | RR {rr}\n\n")
+    lines.append("## Baseline (PFR cru)\n\n")
+    if baseline_df.empty:
+        lines.append("(sem baseline)\n\n")
+    else:
+        lines.append("| rr | trades_train | wr_train | trades_test | wr_test |\n")
+        lines.append("|---:|---:|---:|---:|---:|\n")
+        for _, r in baseline_df.iterrows():
+            lines.append(f"| {r['rr']} | {int(r['trades_train'])} | {r['win_rate_train']} | {int(r['trades_test'])} | {r['win_rate_test']} |\n")
+        lines.append("\n")
 
-        gtop = grp.sort_values(["win_rate_pct_num", "trades"], ascending=[False, False]).head(top_n)
-
-        lines.append("| feature_a | feature_b | bin_a | bin_b | trades | win_rate |\n")
-        lines.append("|---|---:|---:|---:|---:|---:|\n")
-        for _, r in gtop.iterrows():
+    lines.append("## Top univariado (OOS)\n\n")
+    if uni_df.empty:
+        lines.append("(sem univariado)\n\n")
+    else:
+        top = uni_df.head(top_n)
+        lines.append("| rr | feature | mode | pct | threshold | trades_test | wr_test | delta_test |\n")
+        lines.append("|---:|---|---:|---:|---:|---:|---:|---:|\n")
+        for _, r in top.iterrows():
             lines.append(
-                f"| {r['feature_a']} | {r['feature_b']} | {r['bin_a']} | {r['bin_b']} | {int(r['trades'])} | {r['win_rate_pct']} |\n"
+                f"| {r['rr']} | {r['feature']} | {r['mode']} | {int(r['pct'])} | {r['threshold']:.6g} | {int(r['trades_test'])} | {r['win_rate_test']} | {r['delta_vs_base_test']} |\n"
+            )
+        lines.append("\n")
+
+    lines.append("## Top pairwise (OOS, grade fixa)\n\n")
+    if pair_df.empty:
+        lines.append("(sem pairwise)\n\n")
+    else:
+        top = pair_df.head(top_n)
+        lines.append("| rr | feature_a | a | feature_b | b | trades_test | wr_test | delta_test |\n")
+        lines.append("|---:|---|---:|---|---:|---:|---:|---:|\n")
+        for _, r in top.iterrows():
+            a = f"{r['mode_a']}{int(r['pct_a'])}@{r['threshold_a']:.6g}"
+            b = f"{r['mode_b']}{int(r['pct_b'])}@{r['threshold_b']:.6g}"
+            lines.append(
+                f"| {r['rr']} | {r['feature_a']} | {a} | {r['feature_b']} | {b} | {int(r['trades_test'])} | {r['win_rate_test']} | {r['delta_vs_base_test']} |\n"
             )
         lines.append("\n")
 
@@ -281,7 +350,14 @@ def write_best_md(pairwise_df: pd.DataFrame, out_path: str, top_n: int = 30):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--trades", type=str, required=True)
-    parser.add_argument("--min_trades", type=int, default=30)
+    parser.add_argument("--setup", type=str, default="PFR")
+    parser.add_argument("--timeframe", type=str, default="1h")
+    parser.add_argument("--test_frac", type=float, default=0.2)
+    parser.add_argument("--min_trades_train", type=int, default=120)
+    parser.add_argument("--min_trades_test", type=int, default=40)
+    parser.add_argument("--min_improvement_pp", type=float, default=1.0)  # pp = pontos percentuais
+    parser.add_argument("--max_pairwise_features", type=int, default=20)
+    parser.add_argument("--percentiles", type=str, default="10,15,20,25,30,40,50,60")
     args = parser.parse_args()
 
     ensure_results_dir()
@@ -289,50 +365,145 @@ def main():
     trades_df = pd.read_csv(args.trades)
 
     if trades_df.empty:
-        # ainda assim gerar arquivos vazios com headers
-        base_name = os.path.basename(args.trades)
-        stem = base_name.replace("backtest_trades_", "").replace(".csv", "")
-        out_uni = f"results/patterns_univariate_{stem}.csv"
-        out_pair = f"results/patterns_pairwise_{stem}.csv"
-        out_best = f"results/patterns_best_{stem}.md"
-
-        pd.DataFrame().to_csv(out_uni, index=False)
-        pd.DataFrame().to_csv(out_pair, index=False)
-        write_best_md(pd.DataFrame(), out_best, top_n=30)
-        print(f"No trades. Saved empty reports: {out_uni}, {out_pair}, {out_best}")
+        # salva vazios
+        pd.DataFrame().to_csv("results/oos_baseline_PFR_1h.csv", index=False)
+        pd.DataFrame().to_csv("results/oos_univariate_PFR_1h.csv", index=False)
+        pd.DataFrame().to_csv("results/oos_pairwise_PFR_1h.csv", index=False)
+        pd.DataFrame().to_csv("results/oos_inconclusive_features_PFR_1h.csv", index=False)
+        with open("results/oos_best_PFR_1h.md", "w", encoding="utf-8") as f:
+            f.write("# OOS BEST (PFR 1h)\n\n(no trades)\n")
+        print("No trades. Saved empty OOS reports.")
         return
 
     if "outcome" not in trades_df.columns:
         raise ValueError("CSV must contain 'outcome' column with values 'win'/'loss'.")
 
-    # Coerce rr
-    trades_df["rr"] = pd.to_numeric(trades_df["rr"], errors="coerce")
+    # parse signal_time for temporal split
+    if "signal_time" not in trades_df.columns:
+        raise ValueError("Missing signal_time in trades CSV.")
+    trades_df["signal_time_dt"] = pd.to_datetime(trades_df["signal_time"], utc=True, errors="coerce")
 
-    # Required grouping cols sanity
-    for c in ["timeframe", "setup"]:
-        if c not in trades_df.columns:
-            raise ValueError(f"Missing required column: {c}")
+    trades_df["rr"] = pd.to_numeric(trades_df["rr"], errors="coerce")
+    trades_df = trades_df.dropna(subset=["signal_time_dt", "rr"]).copy()
+
+    # filter setup/timeframe if present
+    if "setup" in trades_df.columns:
+        trades_df = trades_df[trades_df["setup"] == args.setup].copy()
+
+    if "timeframe" in trades_df.columns:
+        trades_df = trades_df[trades_df["timeframe"] == args.timeframe].copy()
+
+    if trades_df.empty:
+        raise ValueError("After filters (setup/timeframe), there are 0 trades.")
 
     features = get_feature_columns(trades_df)
+    percentiles = [int(x.strip()) for x in args.percentiles.split(",") if x.strip()]
 
-    uni = build_univariate_patterns(trades_df, features, min_trades=args.min_trades)
-    pair = build_pairwise_patterns(trades_df, features, min_trades=args.min_trades)
+    # outputs
+    baseline_rows = []
+    uni_rows_all = []
+    pair_rows_all = []
 
-    # FIX: build output names from basename only (avoid results/results/... bug)
-    base_name = os.path.basename(args.trades)  # e.g. backtest_trades_BTC_USDT_1h_long.csv
-    stem = base_name.replace("backtest_trades_", "").replace(".csv", "")  # BTC_USDT_1h_long
+    # OOS by RR
+    for rr_val, rr_grp in trades_df.groupby("rr", dropna=False):
+        rr_grp = rr_grp.sort_values("signal_time_dt").reset_index(drop=True)
 
-    out_uni = f"results/patterns_univariate_{stem}.csv"
-    out_pair = f"results/patterns_pairwise_{stem}.csv"
-    out_best = f"results/patterns_best_{stem}.md"
+        train, test = time_split(rr_grp, "signal_time_dt", test_frac=args.test_frac)
+        t_tr, w_tr, l_tr, wr_tr = stats_from_outcome(train)
+        t_te, w_te, l_te, wr_te = stats_from_outcome(test)
 
-    uni.to_csv(out_uni, index=False)
-    pair.to_csv(out_pair, index=False)
-    write_best_md(pair, out_best, top_n=30)
+        baseline_rows.append({
+            "timeframe": args.timeframe,
+            "setup": args.setup,
+            "rr": rr_val,
+            "trades_train": t_tr,
+            "win_rate_train_num": wr_tr,
+            "win_rate_train": format_pct_ptbr(wr_tr, 1),
+            "trades_test": t_te,
+            "win_rate_test_num": wr_te,
+            "win_rate_test": format_pct_ptbr(wr_te, 1),
+        })
 
-    print(f"Saved univariate: {out_uni} ({len(uni)} rows)")
-    print(f"Saved pairwise:   {out_pair} ({len(pair)} rows)")
-    print(f"Saved best md:    {out_best}")
+        # univariado OOS
+        uni = oos_univariate(
+            df_train=train,
+            df_test=test,
+            baseline_train_wr=wr_tr,
+            baseline_test_wr=wr_te,
+            features=features,
+            percentiles=percentiles,
+            min_trades_train=args.min_trades_train,
+            min_trades_test=args.min_trades_test,
+            rr=rr_val,
+            timeframe=args.timeframe,
+            setup=args.setup,
+        )
+        if not uni.empty:
+            uni_rows_all.append(uni)
+
+        # para pairwise vamos decidir features depois (global), mas podemos guardar train/test por rr
+        # Aqui vamos apenas armazenar para rodar pairwise após selecionar features (por rr).
+        # Para não complicar, escolhemos features por RR usando o uni desse RR.
+        if not uni.empty:
+            candidates = pick_non_inconclusive_features(
+                uni_df=uni,
+                min_improvement_pp=args.min_improvement_pp,
+                max_features=args.max_pairwise_features,
+            )
+        else:
+            candidates = []
+
+        pair = oos_pairwise_fixed_grid(
+            df_train=train,
+            df_test=test,
+            baseline_train_wr=wr_tr,
+            baseline_test_wr=wr_te,
+            features=candidates,
+            rr=rr_val,
+            timeframe=args.timeframe,
+            setup=args.setup,
+            min_trades_train=args.min_trades_train,
+            min_trades_test=args.min_trades_test,
+        )
+        if not pair.empty:
+            pair_rows_all.append(pair)
+
+    baseline_df = pd.DataFrame(baseline_rows).sort_values(["rr"]).reset_index(drop=True)
+    uni_df = pd.concat(uni_rows_all, ignore_index=True) if uni_rows_all else pd.DataFrame()
+    pair_df = pd.concat(pair_rows_all, ignore_index=True) if pair_rows_all else pd.DataFrame()
+
+    # inconclusive list (global, baseado no uni concatenado)
+    inconc_df = compute_inconclusive_features(
+        uni_df=uni_df,
+        all_features=features,
+        min_improvement_pp=args.min_improvement_pp,
+    )
+
+    # save
+    baseline_path = "results/oos_baseline_PFR_1h.csv"
+    uni_path = "results/oos_univariate_PFR_1h.csv"
+    pair_path = "results/oos_pairwise_PFR_1h.csv"
+    inconc_path = "results/oos_inconclusive_features_PFR_1h.csv"
+    best_md_path = "results/oos_best_PFR_1h.md"
+
+    baseline_df.to_csv(baseline_path, index=False)
+    uni_df.to_csv(uni_path, index=False)
+    pair_df.to_csv(pair_path, index=False)
+    inconc_df.to_csv(inconc_path, index=False)
+
+    write_oos_best_md(
+        baseline_df=baseline_df,
+        uni_df=uni_df,
+        pair_df=pair_df,
+        out_path=best_md_path,
+        top_n=30,
+    )
+
+    print(f"Saved baseline:    {baseline_path} ({len(baseline_df)} rows)")
+    print(f"Saved univariate:  {uni_path} ({len(uni_df)} rows)")
+    print(f"Saved pairwise:    {pair_path} ({len(pair_df)} rows)")
+    print(f"Saved inconclusive:{inconc_path} ({len(inconc_df)} rows)")
+    print(f"Saved best md:     {best_md_path}")
 
 
 if __name__ == "__main__":
