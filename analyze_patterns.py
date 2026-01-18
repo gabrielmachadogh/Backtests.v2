@@ -1,330 +1,227 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+name: Backtest BTC 1h Long (PFR OOS + Candidates)
 
-import os
-import argparse
-import itertools
-from typing import Dict, List, Optional, Tuple
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: "Símbolo (MEXC perp), ex: BTC_USDT"
+        required: true
+        default: "BTC_USDT"
+      timeframe:
+        description: "Timeframe"
+        required: true
+        default: "1h"
+      min_trades_test:
+        description: "Min trades no teste (OOS) para aceitar filtro"
+        required: true
+        default: "40"
+      min_trades_train:
+        description: "Min trades no treino (OOS) para aceitar filtro"
+        required: true
+        default: "120"
+      test_frac:
+        description: "Fração do histórico usada como teste (ex: 0.2)"
+        required: true
+        default: "0.2"
+      min_improvement_pp:
+        description: "Melhora mínima (pontos percentuais) no TESTE para considerar variável útil"
+        required: true
+        default: "1.0"
+      results_branch:
+        description: "Branch para salvar results/"
+        required: true
+        default: "backtest-results"
 
-import numpy as np
-import pandas as pd
-from pandas.util import hash_pandas_object
+  schedule:
+    - cron: "0 3 * * *"
 
+concurrency:
+  group: backtest-results
+  cancel-in-progress: true
 
-def ensure_results_dir():
-    os.makedirs("results", exist_ok=True)
+permissions:
+  contents: write
 
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
 
-def format_pct_ptbr(x: float, decimals: int = 1) -> str:
-    if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))):
-        return ""
-    s = f"{x:.{decimals}f}".replace(".", ",")
-    return f"{s}%"
+    env:
+      SYMBOL: ${{ inputs.symbol || 'BTC_USDT' }}
+      TIMEFRAME: ${{ inputs.timeframe || '1h' }}
+      RESULTS_BRANCH: ${{ inputs.results_branch || 'backtest-results' }}
 
+      TEST_FRAC: ${{ inputs.test_frac || '0.2' }}
+      MIN_TRADES_TEST: ${{ inputs.min_trades_test || '40' }}
+      MIN_TRADES_TRAIN: ${{ inputs.min_trades_train || '120' }}
+      MIN_IMPROVEMENT_PP: ${{ inputs.min_improvement_pp || '1.0' }}
 
-def stats_from_outcome(df: pd.DataFrame) -> Tuple[int, int, int, float]:
-    trades = int(len(df))
-    wins = int((df["outcome"] == "win").sum())
-    losses = trades - wins
-    win_rate = (wins / trades) * 100.0 if trades > 0 else np.nan
-    return trades, wins, losses, win_rate
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
 
-def get_feature_columns(trades_df: pd.DataFrame) -> List[str]:
-    ignore = {
-        "timeframe", "symbol", "setup", "side",
-        "signal_time", "entry_time", "exit_time",
-        "signal_idx", "entry_idx", "exit_idx",
-        "entry", "stop", "risk", "rr", "tp",
-        "outcome", "exit_reason", "fill_delay", "bars_in_trade",
-        "win_rate_pct", "win_rate_pct_num",
-        "signal_time_dt",
-    }
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install pandas numpy requests
+          fi
 
-    numeric_cols = []
-    for c in trades_df.columns:
-        if c in ignore:
-            continue
-        if pd.api.types.is_numeric_dtype(trades_df[c]):
-            numeric_cols.append(c)
-    return numeric_cols
+      - name: Run backtest (PFR only)
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          python backtest.py \
+            --symbol "$SYMBOL" \
+            --timeframe "$TIMEFRAME" \
+            --only_long 1 \
+            --max_entry_wait 1 \
+            --tick_size 0.1 \
+            --rr_list "1.0,1.5,2.0"
 
+      - name: Run OOS analysis (univariate + pairwise + redundant)
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          TRADES_FILE="results/backtest_trades_${SYMBOL}_${TIMEFRAME}_long.csv"
+          if [ ! -f "$TRADES_FILE" ]; then
+            echo "ERRO: não encontrei $TRADES_FILE"
+            ls -la results || true
+            exit 1
+          fi
 
-def time_split(df: pd.DataFrame, time_col: str, test_frac: float) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    df = df.sort_values(time_col).reset_index(drop=True)
-    n = len(df)
-    if n == 0:
-        return df.copy(), df.copy()
-    cut = int(np.floor(n * (1.0 - test_frac)))
-    cut = max(1, min(cut, n - 1))
-    train = df.iloc[:cut].copy()
-    test = df.iloc[cut:].copy()
-    return train, test
+          python analyze_patterns.py \
+            --trades "$TRADES_FILE" \
+            --setup "PFR" \
+            --timeframe "$TIMEFRAME" \
+            --test_frac "$TEST_FRAC" \
+            --min_trades_train "$MIN_TRADES_TRAIN" \
+            --min_trades_test "$MIN_TRADES_TEST" \
+            --min_improvement_pp "$MIN_IMPROVEMENT_PP" \
+            --max_pairwise_features 20 \
+            --percentiles "10,15,20,25,30,40,50,60"
 
+      - name: Run OOS Candidates (fixed rules)
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          TRADES_FILE="results/backtest_trades_${SYMBOL}_${TIMEFRAME}_long.csv"
+          python evaluate_candidates.py \
+            --trades "$TRADES_FILE" \
+            --setup "PFR" \
+            --timeframe "$TIMEFRAME" \
+            --test_frac "$TEST_FRAC" \
+            --min_trades_train "$MIN_TRADES_TRAIN" \
+            --min_trades_test "$MIN_TRADES_TEST"
 
-def compute_threshold(series_train: pd.Series, mode: str, pct: int) -> Optional[float]:
-    x = series_train.dropna()
-    if len(x) < 20:
-        return None
-    if x.nunique() < 2:
-        return None
+      - name: Generate results/LATEST.md
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
 
-    if mode == "low":
-        return float(x.quantile(pct / 100.0))
-    if mode == "high":
-        return float(x.quantile(1.0 - pct / 100.0))
-    raise ValueError("mode must be 'low' or 'high'")
+          REPO="${GITHUB_REPOSITORY}"
+          RUN_URL="https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          BRANCH="${RESULTS_BRANCH}"
 
+          TRADES="results/backtest_trades_${SYMBOL}_${TIMEFRAME}_long.csv"
+          SUMMARY="results/backtest_summary_${SYMBOL}_${TIMEFRAME}_long.csv"
+          DEBUG="results/backtest_debug_${SYMBOL}_${TIMEFRAME}_long.csv"
 
-def apply_filter(df: pd.DataFrame, feature: str, mode: str, threshold: float) -> pd.DataFrame:
-    if mode == "low":
-        return df[df[feature] <= threshold]
-    if mode == "high":
-        return df[df[feature] >= threshold]
-    raise ValueError("mode must be 'low' or 'high'")
+          OOS_BEST="results/oos_best_PFR_1h.md"
+          OOS_BASE="results/oos_baseline_PFR_1h.csv"
+          OOS_UNI="results/oos_univariate_PFR_1h.csv"
+          OOS_PAIR="results/oos_pairwise_PFR_1h.csv"
+          OOS_INCONC="results/oos_inconclusive_features_PFR_1h.csv"
+          OOS_REDUND="results/oos_redundant_features_PFR_1h.csv"
 
+          CAND_CSV="results/oos_candidates_report_PFR_1h.csv"
+          CAND_MD="results/oos_candidates_best_PFR_1h.md"
 
-def oos_univariate(
-    df_train: pd.DataFrame,
-    df_test: pd.DataFrame,
-    baseline_train_wr: float,
-    baseline_test_wr: float,
-    features: List[str],
-    percentiles: List[int],
-    min_trades_train: int,
-    min_trades_test: int,
-    rr: float,
-    timeframe: str,
-    setup: str,
-) -> pd.DataFrame:
-    rows = []
+          link() { echo "https://github.com/${REPO}/blob/${BRANCH}/$1"; }
 
-    for feat in features:
-        s_train = df_train[feat]
-        if s_train.dropna().shape[0] < min_trades_train:
-            continue
+          {
+            echo "# LATEST (PFR 1h | RR 1.0/1.5/2.0)"
+            echo
+            echo "- Repo: \`${REPO}\`"
+            echo "- Branch de resultados: \`${BRANCH}\`"
+            echo "- Workflow run: ${RUN_URL}"
+            echo "- UTC: $(date -u '+%Y-%m-%d %H:%M:%S')"
+            echo
+            echo "## Backtest"
+            echo "- Trades: $(link "${TRADES}")"
+            echo "- Summary: $(link "${SUMMARY}")"
+            echo "- Debug: $(link "${DEBUG}")"
+            echo
+            echo "## OOS (sem overfitting: thresholds no treino)"
+            echo "- OOS best (.md): $(link "${OOS_BEST}")"
+            echo "- OOS baseline (.csv): $(link "${OOS_BASE}")"
+            echo "- OOS univariate (.csv): $(link "${OOS_UNI}")"
+            echo "- OOS pairwise (.csv): $(link "${OOS_PAIR}")"
+            echo "- OOS inconclusive (.csv): $(link "${OOS_INCONC}")"
+            echo "- OOS redundant (features duplicadas removidas do pairwise): $(link "${OOS_REDUND}")"
+            echo
+            echo "## Candidatos operacionais (regras FIXAS, sem search)"
+            echo "- Candidates best (.md): $(link "${CAND_MD}")"
+            echo "- Candidates report (.csv): $(link "${CAND_CSV}")"
+            echo
+            echo "## Como usar"
+            echo "1) Leia **Candidates best**: ele te diz quais regras fixas melhoram OOS (e quanto)."
+            echo "2) Leia **OOS best** para ideias adicionais, mas evite 'caçar o melhor' demais."
+            echo "3) Compare topo antigo vs novo:"
+            echo "   - antigo: after_new_high_flag / context_after_extreme_flag"
+            echo "   - novo: after_new_high_recent_flag / context_after_extreme_flag_v2 / pullback_from_new_high_atr"
+            echo
+          } > results/LATEST.md
 
-        for pct in percentiles:
-            for mode in ["low", "high"]:
-                thr = compute_threshold(s_train, mode=mode, pct=pct)
-                if thr is None:
-                    continue
+      - name: Commit results/ to results branch (checkout-safe)
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
 
-                sub_train = apply_filter(df_train, feat, mode, thr)
-                sub_test = apply_filter(df_test, feat, mode, thr)
+          rm -rf /tmp/results_snapshot
+          mkdir -p /tmp/results_snapshot
+          cp -r results /tmp/results_snapshot/results
 
-                t_tr, w_tr, l_tr, wr_tr = stats_from_outcome(sub_train)
-                t_te, w_te, l_te, wr_te = stats_from_outcome(sub_test)
+          git reset --hard
+          git clean -fd
 
-                if t_tr < min_trades_train or t_te < min_trades_test:
-                    continue
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-                rows.append({
-                    "timeframe": timeframe,
-                    "setup": setup,
-                    "rr": rr,
-                    "feature": feat,
-                    "mode": mode,
-                    "pct": pct,
-                    "threshold": thr,
-                    "trades_train": t_tr,
-                    "win_rate_train_num": wr_tr,
-                    "win_rate_train": format_pct_ptbr(wr_tr, 1),
-                    "delta_vs_base_train_num": wr_tr - baseline_train_wr,
-                    "delta_vs_base_train": format_pct_ptbr(wr_tr - baseline_train_wr, 1),
+          git fetch origin "$RESULTS_BRANCH" || true
 
-                    "trades_test": t_te,
-                    "win_rate_test_num": wr_te,
-                    "win_rate_test": format_pct_ptbr(wr_te, 1),
-                    "delta_vs_base_test_num": wr_te - baseline_test_wr,
-                    "delta_vs_base_test": format_pct_ptbr(wr_te - baseline_test_wr, 1),
-                })
+          if git show-ref --verify --quiet "refs/remotes/origin/${RESULTS_BRANCH}"; then
+            git checkout -B "$RESULTS_BRANCH" "origin/${RESULTS_BRANCH}"
+          else
+            git checkout -B "$RESULTS_BRANCH"
+          fi
 
-    out = pd.DataFrame(rows)
-    if out.empty:
-        return out
+          rm -rf results
+          cp -r /tmp/results_snapshot/results results
 
-    out = out.sort_values(
-        ["delta_vs_base_test_num", "trades_test", "win_rate_test_num"],
-        ascending=[False, False, False]
-    ).reset_index(drop=True)
+          git add results/
+          if git diff --cached --quiet; then
+            echo "No changes in results/. Nothing to commit."
+            exit 0
+          fi
 
-    return out
-
-
-def pick_non_inconclusive_features(
-    uni_df: pd.DataFrame,
-    min_improvement_pp: float,
-    max_features: int,
-) -> List[str]:
-    if uni_df.empty:
-        return []
-
-    g = uni_df.groupby("feature", dropna=False).agg({
-        "delta_vs_base_test_num": "max",
-        "trades_test": "max",
-        "win_rate_test_num": "max",
-    }).reset_index()
-
-    g = g.sort_values(["delta_vs_base_test_num", "trades_test"], ascending=[False, False])
-    g = g[g["delta_vs_base_test_num"] >= min_improvement_pp]
-    return g["feature"].tolist()[:max_features]
-
-
-def compute_inconclusive_features(
-    uni_df: pd.DataFrame,
-    all_features: List[str],
-    min_improvement_pp: float,
-) -> pd.DataFrame:
-    if uni_df.empty:
-        return pd.DataFrame({"feature": all_features, "best_delta_test_pp": [np.nan]*len(all_features), "status": ["inconclusive"]*len(all_features)})
-
-    best = uni_df.groupby("feature")["delta_vs_base_test_num"].max().to_dict()
-    rows = []
-    for f in all_features:
-        v = best.get(f, None)
-        if v is None or (not np.isfinite(v)) or v < min_improvement_pp:
-            rows.append({"feature": f, "best_delta_test_pp": v, "status": "inconclusive"})
-        else:
-            rows.append({"feature": f, "best_delta_test_pp": v, "status": "candidate"})
-    return pd.DataFrame(rows).sort_values(["status", "best_delta_test_pp"], ascending=[True, False]).reset_index(drop=True)
-
-
-def dedup_features_by_hash(train_df: pd.DataFrame, features: List[str]) -> Tuple[List[str], pd.DataFrame]:
-    """
-    Remove features redundantes (idênticas) no TREINO via hash.
-    Retorna (features_unicas, df_relatorio_redundancia).
-    """
-    sig_map: Dict[int, str] = {}
-    keep: List[str] = []
-    rows = []
-
-    for f in features:
-        s = train_df[f]
-
-        # se for quase toda NaN ou constante, deixa passar (vai cair por min trades)
-        # mas ainda pode gerar hash; ok.
-        try:
-            # hash_pandas_object trata NaN consistentemente
-            h = int(hash_pandas_object(s, index=False).sum())
-        except Exception:
-            # se falhar, mantém
-            keep.append(f)
-            continue
-
-        if h not in sig_map:
-            sig_map[h] = f
-            keep.append(f)
-        else:
-            master = sig_map[h]
-            rows.append({
-                "feature_kept": master,
-                "feature_dropped": f,
-                "reason": "identical_hash_on_train",
-            })
-
-    rep = pd.DataFrame(rows)
-    return keep, rep
-
-
-def oos_pairwise_fixed_grid(
-    df_train: pd.DataFrame,
-    df_test: pd.DataFrame,
-    baseline_train_wr: float,
-    baseline_test_wr: float,
-    features: List[str],
-    rr: float,
-    timeframe: str,
-    setup: str,
-    min_trades_train: int,
-    min_trades_test: int,
-) -> pd.DataFrame:
-    grid = [("low", 20), ("low", 30), ("high", 20), ("high", 30)]
-    rows = []
-    thr_cache: Dict[Tuple[str, str, int], Optional[float]] = {}
-
-    def get_thr(feat: str, mode: str, pct: int) -> Optional[float]:
-        k = (feat, mode, pct)
-        if k in thr_cache:
-            return thr_cache[k]
-        thr_cache[k] = compute_threshold(df_train[feat], mode, pct)
-        return thr_cache[k]
-
-    for a, b in itertools.combinations(features, 2):
-        for (mode_a, pct_a) in grid:
-            thr_a = get_thr(a, mode_a, pct_a)
-            if thr_a is None:
-                continue
-            train_a = apply_filter(df_train, a, mode_a, thr_a)
-            test_a = apply_filter(df_test, a, mode_a, thr_a)
-
-            for (mode_b, pct_b) in grid:
-                thr_b = get_thr(b, mode_b, pct_b)
-                if thr_b is None:
-                    continue
-                train_ab = apply_filter(train_a, b, mode_b, thr_b)
-                test_ab = apply_filter(test_a, b, mode_b, thr_b)
-
-                t_tr, w_tr, l_tr, wr_tr = stats_from_outcome(train_ab)
-                t_te, w_te, l_te, wr_te = stats_from_outcome(test_ab)
-
-                if t_tr < min_trades_train or t_te < min_trades_test:
-                    continue
-
-                rows.append({
-                    "timeframe": timeframe,
-                    "setup": setup,
-                    "rr": rr,
-                    "feature_a": a,
-                    "mode_a": mode_a,
-                    "pct_a": pct_a,
-                    "threshold_a": thr_a,
-                    "feature_b": b,
-                    "mode_b": mode_b,
-                    "pct_b": pct_b,
-                    "threshold_b": thr_b,
-
-                    "trades_train": t_tr,
-                    "win_rate_train_num": wr_tr,
-                    "win_rate_train": format_pct_ptbr(wr_tr, 1),
-                    "delta_vs_base_train_num": wr_tr - baseline_train_wr,
-                    "delta_vs_base_train": format_pct_ptbr(wr_tr - baseline_train_wr, 1),
-
-                    "trades_test": t_te,
-                    "win_rate_test_num": wr_te,
-                    "win_rate_test": format_pct_ptbr(wr_te, 1),
-                    "delta_vs_base_test_num": wr_te - baseline_test_wr,
-                    "delta_vs_base_test": format_pct_ptbr(wr_te - baseline_test_wr, 1),
-                })
-
-    out = pd.DataFrame(rows)
-    if out.empty:
-        return out
-
-    out = out.sort_values(
-        ["delta_vs_base_test_num", "trades_test", "win_rate_test_num"],
-        ascending=[False, False, False]
-    ).reset_index(drop=True)
-
-    return out
-
-
-def write_oos_best_md(
-    baseline_df: pd.DataFrame,
-    uni_df: pd.DataFrame,
-    pair_df: pd.DataFrame,
-    out_path: str,
-    top_n: int = 30,
-):
-    lines = []
-    lines.append("# OOS BEST (PFR 1h)\n\n")
-    lines.append("Split temporal (treino/teste). Thresholds calculados **só no treino**.\n\n")
-
-    lines.append("## Baseline (PFR cru)\n\n")
-    if baseline_df.empty:
-        lines.append("(sem baseline)\n\n")
-    else:
-        lines.append("| rr | trades_train | wr_train | trades_test | wr_test |\n")
-        lines.append("|---:|---:|---:|---:|---:|\n")
-        for _, r in baseline_df.iterrows():
-            lines.append(f"| {r['rr']} | {int(r['trades_train'])} | {r['win_rate_train']} | {int(r['trades_test'])} 
+          git commit -m "PFR ${SYMBOL} ${TIMEFRAME} OOS + Candidates (RR=1/1.5/2) [run ${GITHUB_RUN_ID}]"
+          git push origin "$RESULTS_BRANCH"
