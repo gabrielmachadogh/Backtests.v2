@@ -1,4 +1,4 @@
-name: analyze-pairwise
+name: full-pipeline
 
 on:
   workflow_dispatch:
@@ -7,8 +7,28 @@ permissions:
   contents: write
 
 jobs:
-  analyze:
+  run-all:
     runs-on: ubuntu-latest
+    env:
+      SYMBOL: BTC_USDT
+      TIMEFRAMES: 1h,2h,4h,1d
+      SETUPS: PFR,DL
+      SMA_SHORT: "8"
+      SMA_LONG: "80"
+      SLOPE_LOOKBACK: "8"
+      ATR_PERIOD: "14"
+      RSI_PERIOD: "14"
+      LOOKBACK_N: "20"
+      EXTREME_LOOKBACK: "20"
+      MAX_ENTRY_WAIT_BARS: "1"
+      MAX_HOLD_BARS: "50"
+      MAX_BARS_1H: "25000"
+      WINDOW_DAYS: "30"
+      TICK_SIZE: "0"
+      RRS: "1,1.5,2"
+      AMBIGUOUS_POLICY: loss
+      DEBUG: "0"
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -16,16 +36,17 @@ jobs:
           python-version: "3.11"
       - run: pip install pandas numpy requests tabulate
       
-      # Garante que o script e os dados existam
-      # (Assumindo que os dados já estão no repo ou foram gerados antes)
-      - name: Run Analysis
+      - name: 1. Gerar Backtest
+        run: python backtest.py
+        
+      - name: 2. Analisar Pairwise
         run: python analyze_pairwise.py
         
-      - name: Commit Results
+      - name: Commit
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "bot"
+          git config user.email "bot@users.noreply.github.com"
           git pull --rebase || true
-          git add results/pairwise_analysis_*.csv || true
-          git commit -m "Pairwise Analysis Results" || echo "no changes"
+          git add results/* || true
+          git commit -m "Pipeline Results" || echo "no changes"
           git push
