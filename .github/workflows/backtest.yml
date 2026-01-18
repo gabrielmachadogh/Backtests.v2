@@ -1,4 +1,4 @@
-name: Backtest BTC 1h Long (PFR + DL)
+name: Backtest BTC 1h Long (commit results)
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         required: true
         default: "BTC_USDT"
       timeframe:
-        description: "Timeframe (apenas 1h neste projeto)"
+        description: "Timeframe (apenas 1h)"
         required: true
         default: "1h"
       min_trades:
@@ -19,21 +19,24 @@ on:
         description: "Lista de RRs (CSV), ex: 1.0,1.5,2.0,3.0"
         required: true
         default: "1.0,1.5,2.0,3.0"
-  schedule:
-    # roda todo dia 03:00 UTC (opcional)
-    - cron: "0 3 * * *"
+      results_branch:
+        description: "Branch onde salvar results/"
+        required: true
+        default: "backtest-results"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  run-backtest:
+  run:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -53,33 +56,81 @@ jobs:
 
       - name: Run backtest
         shell: bash
+        working-directory: ${{ github.workspace }}
         env:
           PYTHONUNBUFFERED: "1"
         run: |
+          set -euo pipefail
           python backtest.py \
-            --symbol "${{ inputs.symbol || 'BTC_USDT' }}" \
-            --timeframe "${{ inputs.timeframe || '1h' }}" \
+            --symbol "${{ inputs.symbol }}" \
+            --timeframe "${{ inputs.timeframe }}" \
             --only_long 1 \
             --max_entry_wait 1 \
-            --rr_list "${{ inputs.rr_list || '1.0,1.5,2.0,3.0' }}"
+            --rr_list "${{ inputs.rr_list }}"
 
-      - name: Run analyze patterns
+      - name: Debug - list generated files
         shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          echo "PWD=$(pwd)"
+          echo "Tree (depth 3):"
+          find . -maxdepth 3 -type f | sort
+          echo ""
+          echo "Results folder:"
+          ls -la results || true
+          echo ""
+          echo "Trades candidates:"
+          find . -type f -name "backtest_trades_*_long.csv" | sort || true
+
+      - name: Run analyze patterns (auto-detect trades file)
+        shell: bash
+        working-directory: ${{ github.workspace }}
         env:
           PYTHONUNBUFFERED: "1"
         run: |
+          set -euo pipefail
+
+          # tenta pegar exatamente o nome esperado
+          EXPECTED="results/backtest_trades_${{ inputs.symbol }}_${{ inputs.timeframe }}_long.csv"
+          if [ -f "$EXPECTED" ]; then
+            TRADES_FILE="$EXPECTED"
+          else
+            # fallback: pega o primeiro CSV encontrado
+            TRADES_FILE="$(find . -type f -name "backtest_trades_*_long.csv" | sort | head -n 1 || true)"
+          fi
+
+          if [ -z "${TRADES_FILE}" ] || [ ! -f "${TRADES_FILE}" ]; then
+            echo "ERRO: não encontrei o arquivo de trades. Veja listagem acima."
+            exit 1
+          fi
+
+          echo "Usando TRADES_FILE=${TRADES_FILE}"
           python analyze_patterns.py \
-            --trades "results/backtest_trades_${{ inputs.symbol || 'BTC_USDT' }}_${{ inputs.timeframe || '1h' }}_long.csv" \
-            --min_trades "${{ inputs.min_trades || '30' }}"
+            --trades "${TRADES_FILE}" \
+            --min_trades "${{ inputs.min_trades }}"
 
-      - name: Upload results artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: results
-          path: results/
+      - name: Commit results/ to results branch
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          BRANCH="${{ inputs.results_branch }}"
+          SYMBOL="${{ inputs.symbol }}"
+          TF="${{ inputs.timeframe }}"
+          RR="${{ inputs.rr_list }}"
 
-      - name: Upload data artifact (cache do histórico)
-        uses: actions/upload-artifact@v4
-        with:
-          name: data
-          path: data/
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git checkout -B "$BRANCH"
+
+          git add results/
+
+          if git diff --cached --quiet; then
+            echo "No changes in results/. Nothing to commit."
+            exit 0
+          fi
+
+          git commit -m "Backtest ${SYMBOL} ${TF} long (RR=${RR}) [run ${GITHUB_RUN_ID}]"
+          git push origin "$BRANCH"
