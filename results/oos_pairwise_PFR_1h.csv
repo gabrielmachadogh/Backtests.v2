@@ -1,9 +1,1 @@
-timeframe,setup,rr,feature_a,mode_a,pct_a,threshold_a,feature_b,mode_b,pct_b,threshold_b,trades_train,win_rate_train_num,win_rate_train,delta_vs_base_train_num,delta_vs_base_train,trades_test,win_rate_test_num,win_rate_test,delta_vs_base_test_num,delta_vs_base_test
-1h,PFR,1.5,after_new_high_recent_flag,high,20,1.0,context_after_extreme_flag_v2,high,20,1.0,215,33.02325581395349,"33,0%",-8.591651018344649,"-8,6%",51,37.254901960784316,"37,3%",2.687000726216418,"2,7%"
-1h,PFR,1.5,after_new_high_recent_flag,high,20,1.0,context_after_extreme_flag_v2,high,30,1.0,215,33.02325581395349,"33,0%",-8.591651018344649,"-8,6%",51,37.254901960784316,"37,3%",2.687000726216418,"2,7%"
-1h,PFR,1.5,after_new_high_recent_flag,high,30,1.0,context_after_extreme_flag_v2,high,20,1.0,215,33.02325581395349,"33,0%",-8.591651018344649,"-8,6%",51,37.254901960784316,"37,3%",2.687000726216418,"2,7%"
-1h,PFR,1.5,after_new_high_recent_flag,high,30,1.0,context_after_extreme_flag_v2,high,30,1.0,215,33.02325581395349,"33,0%",-8.591651018344649,"-8,6%",51,37.254901960784316,"37,3%",2.687000726216418,"2,7%"
-1h,PFR,2.0,after_new_high_recent_flag,high,20,1.0,context_after_extreme_flag_v2,high,20,1.0,209,27.751196172248804,"27,8%",-7.184701263648627,"-7,2%",50,34.0,"34,0%",3.23076923076923,"3,2%"
-1h,PFR,2.0,after_new_high_recent_flag,high,20,1.0,context_after_extreme_flag_v2,high,30,1.0,209,27.751196172248804,"27,8%",-7.184701263648627,"-7,2%",50,34.0,"34,0%",3.23076923076923,"3,2%"
-1h,PFR,2.0,after_new_high_recent_flag,high,30,1.0,context_after_extreme_flag_v2,high,20,1.0,209,27.751196172248804,"27,8%",-7.184701263648627,"-7,2%",50,34.0,"34,0%",3.23076923076923,"3,2%"
-1h,PFR,2.0,after_new_high_recent_flag,high,30,1.0,context_after_extreme_flag_v2,high,30,1.0,209,27.751196172248804,"27,8%",-7.184701263648627,"-7,2%",50,34.0,"34,0%",3.23076923076923,"3,2%"
+

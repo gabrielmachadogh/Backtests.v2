@@ -1,6 +1,6 @@
 # OOS BEST (PFR 1h)
 
-Este relatório usa **split temporal** (treino/teste). Thresholds são calculados **só no treino**.
+Split temporal (treino/teste). Thresholds calculados **só no treino**.
 
 ## Baseline (PFR cru)
 
@@ -47,14 +47,5 @@ Este relatório usa **split temporal** (treino/teste). Thresholds são calculado
 
 ## Top pairwise (OOS, grade fixa)
 
-| rr | feature_a | a | feature_b | b | trades_test | wr_test | delta_test |
-|---:|---|---:|---|---:|---:|---:|---:|
-| 1.5 | after_new_high_recent_flag | high20@1 | context_after_extreme_flag_v2 | high20@1 | 51 | 37,3% | 2,7% |
-| 1.5 | after_new_high_recent_flag | high20@1 | context_after_extreme_flag_v2 | high30@1 | 51 | 37,3% | 2,7% |
-| 1.5 | after_new_high_recent_flag | high30@1 | context_after_extreme_flag_v2 | high20@1 | 51 | 37,3% | 2,7% |
-| 1.5 | after_new_high_recent_flag | high30@1 | context_after_extreme_flag_v2 | high30@1 | 51 | 37,3% | 2,7% |
-| 2.0 | after_new_high_recent_flag | high20@1 | context_after_extreme_flag_v2 | high20@1 | 50 | 34,0% | 3,2% |
-| 2.0 | after_new_high_recent_flag | high20@1 | context_after_extreme_flag_v2 | high30@1 | 50 | 34,0% | 3,2% |
-| 2.0 | after_new_high_recent_flag | high30@1 | context_after_extreme_flag_v2 | high20@1 | 50 | 34,0% | 3,2% |
-| 2.0 | after_new_high_recent_flag | high30@1 | context_after_extreme_flag_v2 | high30@1 | 50 | 34,0% | 3,2% |
+(sem pairwise)
 
