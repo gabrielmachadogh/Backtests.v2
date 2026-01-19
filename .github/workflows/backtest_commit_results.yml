@@ -1,4 +1,4 @@
-name: Backtest BTC 1h Long (PFR OOS + Candidates)
+name: Backtest BTC 1h Long (PFR Recommended Tests)
 
 on:
   workflow_dispatch:
@@ -12,21 +12,13 @@ on:
         required: true
         default: "1h"
       min_trades_test:
-        description: "Min trades no teste (OOS) para aceitar filtro"
+        description: "Min trades no teste (OOS) p/ aceitar candidato"
         required: true
-        default: "40"
+        default: "35"
       min_trades_train:
-        description: "Min trades no treino (OOS) para aceitar filtro"
+        description: "Min trades no treino (OOS) p/ aceitar candidato"
         required: true
         default: "120"
-      test_frac:
-        description: "Fração do histórico usada como teste (ex: 0.2)"
-        required: true
-        default: "0.2"
-      min_improvement_pp:
-        description: "Melhora mínima (pontos percentuais) no TESTE para considerar variável útil"
-        required: true
-        default: "1.0"
       results_branch:
         description: "Branch para salvar results/"
         required: true
@@ -51,11 +43,8 @@ jobs:
       SYMBOL: ${{ inputs.symbol || 'BTC_USDT' }}
       TIMEFRAME: ${{ inputs.timeframe || '1h' }}
       RESULTS_BRANCH: ${{ inputs.results_branch || 'backtest-results' }}
-
-      TEST_FRAC: ${{ inputs.test_frac || '0.2' }}
-      MIN_TRADES_TEST: ${{ inputs.min_trades_test || '40' }}
+      MIN_TRADES_TEST: ${{ inputs.min_trades_test || '35' }}
       MIN_TRADES_TRAIN: ${{ inputs.min_trades_train || '120' }}
-      MIN_IMPROVEMENT_PP: ${{ inputs.min_improvement_pp || '1.0' }}
 
     steps:
       - name: Checkout
@@ -93,42 +82,41 @@ jobs:
             --tick_size 0.1 \
             --rr_list "1.0,1.5,2.0"
 
-      - name: Run OOS analysis (univariate + pairwise + redundant)
+      - name: Run recommended OOS candidates (tf20/tf30/tf40)
         shell: bash
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          TRADES_FILE="results/backtest_trades_${SYMBOL}_${TIMEFRAME}_long.csv"
-          if [ ! -f "$TRADES_FILE" ]; then
-            echo "ERRO: não encontrei $TRADES_FILE"
+          TRADES="results/backtest_trades_${SYMBOL}_${TIMEFRAME}_long.csv"
+          if [ ! -f "$TRADES" ]; then
+            echo "ERRO: não encontrei $TRADES"
             ls -la results || true
             exit 1
           fi
 
-          python analyze_patterns.py \
-            --trades "$TRADES_FILE" \
-            --setup "PFR" \
-            --timeframe "$TIMEFRAME" \
-            --test_frac "$TEST_FRAC" \
-            --min_trades_train "$MIN_TRADES_TRAIN" \
-            --min_trades_test "$MIN_TRADES_TEST" \
-            --min_improvement_pp "$MIN_IMPROVEMENT_PP" \
-            --max_pairwise_features 20 \
-            --percentiles "10,15,20,25,30,40,50,60"
+          mkdir -p results/recommended/tf20 results/recommended/tf30 results/recommended/tf40
 
-      - name: Run OOS Candidates (fixed rules)
+          python evaluate_candidates.py \
+            --trades "$TRADES" --setup PFR --timeframe "$TIMEFRAME" \
+            --test_frac 0.2 --min_trades_train "$MIN_TRADES_TRAIN" --min_trades_test "$MIN_TRADES_TEST" \
+            --out_dir "results/recommended/tf20"
+
+          python evaluate_candidates.py \
+            --trades "$TRADES" --setup PFR --timeframe "$TIMEFRAME" \
+            --test_frac 0.3 --min_trades_train "$MIN_TRADES_TRAIN" --min_trades_test "$MIN_TRADES_TEST" \
+            --out_dir "results/recommended/tf30"
+
+          python evaluate_candidates.py \
+            --trades "$TRADES" --setup PFR --timeframe "$TIMEFRAME" \
+            --test_frac 0.4 --min_trades_train "$MIN_TRADES_TRAIN" --min_trades_test "$MIN_TRADES_TEST" \
+            --out_dir "results/recommended/tf40"
+
+      - name: Summarize stability across splits
         shell: bash
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          TRADES_FILE="results/backtest_trades_${SYMBOL}_${TIMEFRAME}_long.csv"
-          python evaluate_candidates.py \
-            --trades "$TRADES_FILE" \
-            --setup "PFR" \
-            --timeframe "$TIMEFRAME" \
-            --test_frac "$TEST_FRAC" \
-            --min_trades_train "$MIN_TRADES_TRAIN" \
-            --min_trades_test "$MIN_TRADES_TEST"
+          python summarize_stability.py --base_dir "results/recommended" --splits "tf20,tf30,tf40"
 
       - name: Generate results/LATEST.md
         shell: bash
@@ -140,46 +128,29 @@ jobs:
           RUN_URL="https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
           BRANCH="${RESULTS_BRANCH}"
 
-          TRADES="results/backtest_trades_${SYMBOL}_${TIMEFRAME}_long.csv"
-          SUMMARY="results/backtest_summary_${SYMBOL}_${TIMEFRAME}_long.csv"
-          DEBUG="results/backtest_debug_${SYMBOL}_${TIMEFRAME}_long.csv"
-
-          OOS_BEST="results/oos_best_PFR_1h.md"
-          OOS_BASE="results/oos_baseline_PFR_1h.csv"
-          OOS_UNI="results/oos_univariate_PFR_1h.csv"
-          OOS_PAIR="results/oos_pairwise_PFR_1h.csv"
-          OOS_INCONC="results/oos_inconclusive_features_PFR_1h.csv"
-          OOS_REDUND="results/oos_redundant_features_PFR_1h.csv"
-
-          CAND_CSV="results/oos_candidates_report_PFR_1h.csv"
-          CAND_MD="results/oos_candidates_best_PFR_1h.md"
-
           link() { echo "https://github.com/${REPO}/blob/${BRANCH}/$1"; }
 
           {
-            echo "# LATEST (PFR 1h | RR 1.0/1.5/2.0)"
+            echo "# LATEST (PFR 1h | Recommended Tests)"
             echo
             echo "- Repo: \`${REPO}\`"
-            echo "- Branch de resultados: \`${BRANCH}\`"
+            echo "- Branch: \`${BRANCH}\`"
             echo "- Workflow run: ${RUN_URL}"
             echo "- UTC: $(date -u '+%Y-%m-%d %H:%M:%S')"
             echo
             echo "## Backtest"
-            echo "- Trades: $(link "${TRADES}")"
-            echo "- Summary: $(link "${SUMMARY}")"
-            echo "- Debug: $(link "${DEBUG}")"
+            echo "- Trades: $(link "results/backtest_trades_${SYMBOL}_${TIMEFRAME}_long.csv")"
+            echo "- Summary: $(link "results/backtest_summary_${SYMBOL}_${TIMEFRAME}_long.csv")"
+            echo "- Debug: $(link "results/backtest_debug_${SYMBOL}_${TIMEFRAME}_long.csv")"
             echo
-            echo "## OOS (thresholds no treino)"
-            echo "- OOS best (.md): $(link "${OOS_BEST}")"
-            echo "- OOS baseline (.csv): $(link "${OOS_BASE}")"
-            echo "- OOS univariate (.csv): $(link "${OOS_UNI}")"
-            echo "- OOS pairwise (.csv): $(link "${OOS_PAIR}")"
-            echo "- OOS inconclusive (.csv): $(link "${OOS_INCONC}")"
-            echo "- OOS redundant (features duplicadas removidas do pairwise): $(link "${OOS_REDUND}")"
+            echo "## Recommended OOS (candidates fixos)"
+            echo "- tf20 candidates best: $(link "results/recommended/tf20/oos_candidates_best_PFR_1h.md")"
+            echo "- tf30 candidates best: $(link "results/recommended/tf30/oos_candidates_best_PFR_1h.md")"
+            echo "- tf40 candidates best: $(link "results/recommended/tf40/oos_candidates_best_PFR_1h.md")"
             echo
-            echo "## Candidatos operacionais (regras FIXAS)"
-            echo "- Candidates best (.md): $(link "${CAND_MD}")"
-            echo "- Candidates report (.csv): $(link "${CAND_CSV}")"
+            echo "## Stability (decisão final)"
+            echo "- STABILITY.md: $(link "results/recommended/STABILITY.md")"
+            echo "- STABILITY.csv: $(link "results/recommended/STABILITY.csv")"
             echo
           } > results/LATEST.md
 
@@ -216,5 +187,5 @@ jobs:
             exit 0
           fi
 
-          git commit -m "PFR ${SYMBOL} ${TIMEFRAME} OOS + Candidates (RR=1/1.5/2) [run ${GITHUB_RUN_ID}]"
+          git commit -m "PFR recommended tests (tf20/tf30/tf40) [run ${GITHUB_RUN_ID}]"
           git push origin "$RESULTS_BRANCH"
