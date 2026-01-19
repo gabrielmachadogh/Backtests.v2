@@ -10,8 +10,8 @@ import numpy as np
 import pandas as pd
 
 
-def ensure_results_dir():
-    os.makedirs("results", exist_ok=True)
+def ensure_dir(path: str):
+    os.makedirs(path, exist_ok=True)
 
 
 def format_pct_ptbr(x: float, decimals: int = 1) -> str:
@@ -30,6 +30,10 @@ def stats_from_outcome(df: pd.DataFrame) -> Tuple[int, int, int, float]:
 
 
 def expectancy_r(win_rate_pct: float, rr: float) -> float:
+    """
+    Expectancy em unidades de R:
+      EV = P(win)*RR - P(loss)*1
+    """
     if not np.isfinite(win_rate_pct):
         return np.nan
     p = win_rate_pct / 100.0
@@ -73,8 +77,8 @@ def apply_filter(df: pd.DataFrame, feature: str, mode: str, threshold: float) ->
 @dataclass
 class FilterSpec:
     feature: str
-    mode: str
-    pct: int
+    mode: str   # "low" | "high"
+    pct: int    # percentil usado no TREINO (quantile)
 
 
 @dataclass
@@ -84,13 +88,20 @@ class CandidateSpec:
     filters: List[FilterSpec]
 
 
-def build_default_candidates() -> List[CandidateSpec]:
+def build_recommended_candidates() -> List[CandidateSpec]:
+    """
+    Candidatos FIXOS (sem search), baseados no que apareceu no seu OOS + tabela antiga:
+    - RR1: momentum/volume/tendência + evitar slope esticado + CLV
+    - RR2: RSI / pullback em ATR / momentum / volume e combos
+    """
     cands: List[CandidateSpec] = []
 
+    # ===== RR 1.0 =====
     cands += [
         CandidateSpec("RR1_ret3_high50", 1.0, [FilterSpec("ret_3_pct", "high", 50)]),
         CandidateSpec("RR1_volz_high50", 1.0, [FilterSpec("vol_z", "high", 50)]),
         CandidateSpec("RR1_magap_high60", 1.0, [FilterSpec("ma_gap_pct", "high", 60)]),
+
         CandidateSpec("RR1_ret3_high50__AND__volz_high50", 1.0, [
             FilterSpec("ret_3_pct", "high", 50),
             FilterSpec("vol_z", "high", 50),
@@ -99,8 +110,25 @@ def build_default_candidates() -> List[CandidateSpec]:
             FilterSpec("ret_3_pct", "high", 50),
             FilterSpec("ma_gap_pct", "high", 60),
         ]),
+
+        # "evitar esticado": slope_strength <= q80 (low80)
+        CandidateSpec("RR1_ret3_high50__AND__slope_low80", 1.0, [
+            FilterSpec("ret_3_pct", "high", 50),
+            FilterSpec("slope_strength", "low", 80),
+        ]),
+
+        # candle quality
+        CandidateSpec("RR1_ret3_high50__AND__clv_high60", 1.0, [
+            FilterSpec("ret_3_pct", "high", 50),
+            FilterSpec("clv", "high", 60),
+        ]),
+        CandidateSpec("RR1_ret3_high50__AND__bodypct_high60", 1.0, [
+            FilterSpec("ret_3_pct", "high", 50),
+            FilterSpec("body_pct", "high", 60),
+        ]),
     ]
 
+    # ===== RR 1.5 ===== (a ideia é ver se sobrevive fora da amostra)
     cands += [
         CandidateSpec("RR1p5_ret3_high50", 1.5, [FilterSpec("ret_3_pct", "high", 50)]),
         CandidateSpec("RR1p5_volz_high50", 1.5, [FilterSpec("vol_z", "high", 50)]),
@@ -109,12 +137,19 @@ def build_default_candidates() -> List[CandidateSpec]:
             FilterSpec("ret_3_pct", "high", 50),
             FilterSpec("vol_z", "high", 50),
         ]),
+        CandidateSpec("RR1p5_ret3_high50__AND__slope_low80", 1.5, [
+            FilterSpec("ret_3_pct", "high", 50),
+            FilterSpec("slope_strength", "low", 80),
+        ]),
     ]
 
+    # ===== RR 2.0 =====
     cands += [
         CandidateSpec("RR2_rsi_high60", 2.0, [FilterSpec("rsi", "high", 60)]),
         CandidateSpec("RR2_pullback_atr_low50", 2.0, [FilterSpec("pullback_from_new_high_atr", "low", 50)]),
         CandidateSpec("RR2_ret3_high50", 2.0, [FilterSpec("ret_3_pct", "high", 50)]),
+        CandidateSpec("RR2_volz_high50", 2.0, [FilterSpec("vol_z", "high", 50)]),
+
         CandidateSpec("RR2_rsi_high60__AND__pullback_atr_low50", 2.0, [
             FilterSpec("rsi", "high", 60),
             FilterSpec("pullback_from_new_high_atr", "low", 50),
@@ -123,6 +158,16 @@ def build_default_candidates() -> List[CandidateSpec]:
             FilterSpec("rsi", "high", 60),
             FilterSpec("ret_3_pct", "high", 50),
         ]),
+        CandidateSpec("RR2_rsi_high60__AND__volz_high50", 2.0, [
+            FilterSpec("rsi", "high", 60),
+            FilterSpec("vol_z", "high", 50),
+        ]),
+        CandidateSpec("RR2_pullback_atr_low50__AND__volz_high50", 2.0, [
+            FilterSpec("pullback_from_new_high_atr", "low", 50),
+            FilterSpec("vol_z", "high", 50),
+        ]),
+
+        # comparação "topo antigo vs novo" (espera-se que o antigo seja inconclusivo)
         CandidateSpec("RR2_after_new_high_flag_high50", 2.0, [FilterSpec("after_new_high_flag", "high", 50)]),
         CandidateSpec("RR2_after_new_high_recent_flag_high50", 2.0, [FilterSpec("after_new_high_recent_flag", "high", 50)]),
     ]
@@ -138,9 +183,11 @@ def evaluate_candidate(
     min_trades_train: int,
     min_trades_test: int,
 ) -> Optional[Dict]:
+    # baseline
     t0_tr, w0_tr, l0_tr, wr0_tr = stats_from_outcome(train)
     t0_te, w0_te, l0_te, wr0_te = stats_from_outcome(test)
 
+    # thresholds calculados no treino
     thresholds = []
     sub_tr = train
     sub_te = test
@@ -204,10 +251,10 @@ def evaluate_candidate(
     }
 
 
-def write_best_md(df: pd.DataFrame, out_path: str, top_n: int = 40):
+def write_best_md(df: pd.DataFrame, out_path: str, top_n: int = 60):
     lines = []
     lines.append("# OOS CANDIDATES BEST (PFR 1h)\n\n")
-    lines.append("Regras fixas (pré-definidas). Thresholds calculados no TREINO.\n\n")
+    lines.append("Regras FIXAS (pré-definidas). Thresholds calculados no TREINO.\n\n")
 
     if df.empty:
         lines.append("(no candidates passed min trades)\n")
@@ -239,15 +286,16 @@ def main():
     parser.add_argument("--test_frac", type=float, default=0.2)
     parser.add_argument("--min_trades_train", type=int, default=120)
     parser.add_argument("--min_trades_test", type=int, default=40)
+    parser.add_argument("--out_dir", type=str, default="results")
     args = parser.parse_args()
 
-    ensure_results_dir()
+    ensure_dir(args.out_dir)
 
     trades_df = pd.read_csv(args.trades)
 
     if trades_df.empty:
-        pd.DataFrame().to_csv("results/oos_candidates_report_PFR_1h.csv", index=False)
-        write_best_md(pd.DataFrame(), "results/oos_candidates_best_PFR_1h.md", top_n=40)
+        pd.DataFrame().to_csv(os.path.join(args.out_dir, "oos_candidates_report_PFR_1h.csv"), index=False)
+        write_best_md(pd.DataFrame(), os.path.join(args.out_dir, "oos_candidates_best_PFR_1h.md"), top_n=60)
         print("No trades. Saved empty candidates reports.")
         return
 
@@ -266,7 +314,7 @@ def main():
     if trades_df.empty:
         raise ValueError("After filters (setup/timeframe), there are 0 trades.")
 
-    candidates = build_default_candidates()
+    candidates = build_recommended_candidates()
 
     rows = []
     for rr_val, rr_grp in trades_df.groupby("rr", dropna=False):
@@ -287,11 +335,11 @@ def main():
                 rows.append(res)
 
     out = pd.DataFrame(rows)
-    out_path = "results/oos_candidates_report_PFR_1h.csv"
+    out_path = os.path.join(args.out_dir, "oos_candidates_report_PFR_1h.csv")
     out.to_csv(out_path, index=False)
 
-    md_path = "results/oos_candidates_best_PFR_1h.md"
-    write_best_md(out, md_path, top_n=40)
+    md_path = os.path.join(args.out_dir, "oos_candidates_best_PFR_1h.md")
+    write_best_md(out, md_path, top_n=60)
 
     print(f"Saved candidates report: {out_path} ({len(out)} rows)")
     print(f"Saved candidates best:   {md_path}")
