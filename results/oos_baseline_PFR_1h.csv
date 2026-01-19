@@ -1,4 +1,0 @@
-timeframe,setup,rr,trades_train,win_rate_train_num,win_rate_train,trades_test,win_rate_test_num,win_rate_test
-1h,PFR,1.0,335,48.95522388059702,"49,0%",84,44.047619047619044,"44,0%"
-1h,PFR,1.5,322,41.61490683229814,"41,6%",81,34.5679012345679,"34,6%"
-1h,PFR,2.0,312,34.93589743589743,"34,9%",78,30.76923076923077,"30,8%"

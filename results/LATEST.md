@@ -1,24 +1,21 @@
-# LATEST (PFR 1h | RR 1.0/1.5/2.0)
+# LATEST (PFR 1h | Recommended Tests)
 
 - Repo: `gabrielmachadogh/Backtests.v2`
-- Branch de resultados: `backtest-results`
-- Workflow run: https://github.com/gabrielmachadogh/Backtests.v2/actions/runs/21124985097
-- UTC: 2026-01-19 04:09:53
+- Branch: `backtest-results`
+- Workflow run: https://github.com/gabrielmachadogh/Backtests.v2/actions/runs/21145797421
+- UTC: 2026-01-19 17:04:29
 
 ## Backtest
 - Trades: https://github.com/gabrielmachadogh/Backtests.v2/blob/backtest-results/results/backtest_trades_BTC_USDT_1h_long.csv
 - Summary: https://github.com/gabrielmachadogh/Backtests.v2/blob/backtest-results/results/backtest_summary_BTC_USDT_1h_long.csv
 - Debug: https://github.com/gabrielmachadogh/Backtests.v2/blob/backtest-results/results/backtest_debug_BTC_USDT_1h_long.csv
 
-## OOS (thresholds no treino)
-- OOS best (.md): https://github.com/gabrielmachadogh/Backtests.v2/blob/backtest-results/results/oos_best_PFR_1h.md
-- OOS baseline (.csv): https://github.com/gabrielmachadogh/Backtests.v2/blob/backtest-results/results/oos_baseline_PFR_1h.csv
-- OOS univariate (.csv): https://github.com/gabrielmachadogh/Backtests.v2/blob/backtest-results/results/oos_univariate_PFR_1h.csv
-- OOS pairwise (.csv): https://github.com/gabrielmachadogh/Backtests.v2/blob/backtest-results/results/oos_pairwise_PFR_1h.csv
-- OOS inconclusive (.csv): https://github.com/gabrielmachadogh/Backtests.v2/blob/backtest-results/results/oos_inconclusive_features_PFR_1h.csv
-- OOS redundant (features duplicadas removidas do pairwise): https://github.com/gabrielmachadogh/Backtests.v2/blob/backtest-results/results/oos_redundant_features_PFR_1h.csv
+## Recommended OOS (candidates fixos)
+- tf20 candidates best: https://github.com/gabrielmachadogh/Backtests.v2/blob/backtest-results/results/recommended/tf20/oos_candidates_best_PFR_1h.md
+- tf30 candidates best: https://github.com/gabrielmachadogh/Backtests.v2/blob/backtest-results/results/recommended/tf30/oos_candidates_best_PFR_1h.md
+- tf40 candidates best: https://github.com/gabrielmachadogh/Backtests.v2/blob/backtest-results/results/recommended/tf40/oos_candidates_best_PFR_1h.md
 
-## Candidatos operacionais (regras FIXAS)
-- Candidates best (.md): https://github.com/gabrielmachadogh/Backtests.v2/blob/backtest-results/results/oos_candidates_best_PFR_1h.md
-- Candidates report (.csv): https://github.com/gabrielmachadogh/Backtests.v2/blob/backtest-results/results/oos_candidates_report_PFR_1h.csv
+## Stability (decisão final)
+- STABILITY.md: https://github.com/gabrielmachadogh/Backtests.v2/blob/backtest-results/results/recommended/STABILITY.md
+- STABILITY.csv: https://github.com/gabrielmachadogh/Backtests.v2/blob/backtest-results/results/recommended/STABILITY.csv
 
