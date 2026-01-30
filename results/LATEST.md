@@ -2,8 +2,8 @@
 
 - Repo: `gabrielmachadogh/Backtests.v2`
 - Branch: `backtest-results`
-- Workflow run: https://github.com/gabrielmachadogh/Backtests.v2/actions/runs/21465594171
-- UTC: 2026-01-29 04:25:35
+- Workflow run: https://github.com/gabrielmachadogh/Backtests.v2/actions/runs/21504394363
+- UTC: 2026-01-30 04:28:21
 
 ## Backtest
 - Trades: https://github.com/gabrielmachadogh/Backtests.v2/blob/backtest-results/results/backtest_trades_BTC_USDT_1h_long.csv
