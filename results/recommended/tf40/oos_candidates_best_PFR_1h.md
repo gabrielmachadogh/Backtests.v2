@@ -6,25 +6,25 @@ Regras FIXAS (pré-definidas). Thresholds calculados no TREINO.
 
 | name | filters | rule | trades_test | wr_test | Δwr_test | evR_test | ΔevR_test |
 |---|---:|---|---:|---:|---:|---:|---:|
-| RR1_volz_high50 | 1 | vol_z high50@-0.291583 | 100 | 58,0% | 6,6% | 0.1600 | 0.1311 |
-| RR1_ret3_high50 | 1 | ret_3_pct high50@0.0383034 | 83 | 55,4% | 4,0% | 0.1084 | 0.0795 |
-| RR1_magap_high60 | 1 | ma_gap_pct high60@1.30604 | 92 | 54,3% | 2,9% | 0.0870 | 0.0581 |
+| RR1_volz_high50 | 1 | vol_z high50@-0.290896 | 99 | 57,6% | 6,7% | 0.1515 | 0.1342 |
+| RR1_ret3_high50 | 1 | ret_3_pct high50@0.0393346 | 83 | 54,2% | 3,3% | 0.0843 | 0.0670 |
+| RR1_magap_high60 | 1 | ma_gap_pct high60@1.32407 | 88 | 52,3% | 1,4% | 0.0455 | 0.0281 |
 
 ## RR 1.5
 
 | name | filters | rule | trades_test | wr_test | Δwr_test | evR_test | ΔevR_test |
 |---|---:|---|---:|---:|---:|---:|---:|
-| RR1p5_magap_high60 | 1 | ma_gap_pct high60@1.22081 | 94 | 48,9% | 6,2% | 0.2234 | 0.1541 |
-| RR1p5_ret3_high50 | 1 | ret_3_pct high50@0.0410933 | 77 | 48,1% | 5,3% | 0.2013 | 0.1320 |
-| RR1p5_volz_high50 | 1 | vol_z high50@-0.306833 | 97 | 46,4% | 3,6% | 0.1598 | 0.0905 |
+| RR1p5_magap_high60 | 1 | ma_gap_pct high60@1.22862 | 93 | 47,3% | 5,1% | 0.1828 | 0.1286 |
+| RR1p5_ret3_high50 | 1 | ret_3_pct high50@0.0428519 | 77 | 46,8% | 4,6% | 0.1688 | 0.1146 |
+| RR1p5_volz_high50 | 1 | vol_z high50@-0.293428 | 96 | 45,8% | 3,7% | 0.1458 | 0.0916 |
 
 ## RR 2.0
 
 | name | filters | rule | trades_test | wr_test | Δwr_test | evR_test | ΔevR_test |
 |---|---:|---|---:|---:|---:|---:|---:|
-| RR2_rsi_high60 | 1 | rsi high60@60.1942 | 92 | 40,2% | 4,2% | 0.2065 | 0.1258 |
-| RR2_pullback_atr_low50 | 1 | pullback_from_new_high_atr low50@1.04529 | 85 | 40,0% | 4,0% | 0.2000 | 0.1193 |
-| RR2_volz_high50 | 1 | vol_z high50@-0.34453 | 98 | 38,8% | 2,8% | 0.1633 | 0.0825 |
-| RR2_ret3_high50 | 1 | ret_3_pct high50@0.0486487 | 73 | 38,4% | 2,3% | 0.1507 | 0.0699 |
+| RR2_pullback_atr_low50 | 1 | pullback_from_new_high_atr low50@1.044 | 84 | 40,5% | 4,5% | 0.2143 | 0.1335 |
+| RR2_rsi_high60 | 1 | rsi high60@60.1196 | 95 | 40,0% | 4,0% | 0.2000 | 0.1193 |
+| RR2_volz_high50 | 1 | vol_z high50@-0.343715 | 97 | 39,2% | 3,2% | 0.1753 | 0.0945 |
+| RR2_ret3_high50 | 1 | ret_3_pct high50@0.0428519 | 74 | 37,8% | 1,8% | 0.1351 | 0.0544 |
 | RR2_after_new_high_recent_flag_high50 | 1 | after_new_high_recent_flag high50@1 | 101 | 33,7% | -2,4% | 0.0099 | -0.0708 |
 
