@@ -6,19 +6,19 @@ Regras FIXAS (pré-definidas). Thresholds calculados no TREINO.
 
 | name | filters | rule | trades_test | wr_test | Δwr_test | evR_test | ΔevR_test |
 |---|---:|---|---:|---:|---:|---:|---:|
-| RR1_ret3_high50 | 1 | ret_3_pct high50@0.0372324 | 40 | 47,5% | 3,5% | -0.0500 | 0.0709 |
-| RR1_volz_high50 | 1 | vol_z high50@-0.249369 | 53 | 47,2% | 3,2% | -0.0566 | 0.0643 |
-| RR1_ret3_high50__AND__slope_low80 | 2 | ret_3_pct high50@0.0372324 AND slope_strength low80@0.271314 | 37 | 45,9% | 2,0% | -0.0811 | 0.0398 |
-| RR1_magap_high60 | 1 | ma_gap_pct high60@1.24461 | 47 | 44,7% | 0,7% | -0.1064 | 0.0145 |
+| RR1_ret3_high50 | 1 | ret_3_pct high50@0.0372722 | 39 | 48,7% | 3,7% | -0.0256 | 0.0733 |
+| RR1_volz_high50 | 1 | vol_z high50@-0.239186 | 52 | 48,1% | 3,0% | -0.0385 | 0.0604 |
+| RR1_ret3_high50__AND__slope_low80 | 2 | ret_3_pct high50@0.0372722 AND slope_strength low80@0.271278 | 36 | 47,2% | 2,2% | -0.0556 | 0.0433 |
+| RR1_magap_high60 | 1 | ma_gap_pct high60@1.24209 | 47 | 44,7% | -0,4% | -0.1064 | -0.0075 |
 
 ## RR 1.5
 
 | name | filters | rule | trades_test | wr_test | Δwr_test | evR_test | ΔevR_test |
 |---|---:|---|---:|---:|---:|---:|---:|
-| RR1p5_magap_high60 | 1 | ma_gap_pct high60@1.23498 | 45 | 44,4% | 6,9% | 0.1111 | 0.1736 |
-| RR1p5_ret3_high50__AND__slope_low80 | 2 | ret_3_pct high50@0.0372324 AND slope_strength low80@0.271278 | 36 | 44,4% | 6,9% | 0.1111 | 0.1736 |
-| RR1p5_ret3_high50 | 1 | ret_3_pct high50@0.0372324 | 39 | 41,0% | 3,5% | 0.0256 | 0.0881 |
-| RR1p5_volz_high50 | 1 | vol_z high50@-0.277879 | 55 | 36,4% | -1,1% | -0.0909 | -0.0284 |
+| RR1p5_ret3_high50__AND__slope_low80 | 2 | ret_3_pct high50@0.0372722 AND slope_strength low80@0.271242 | 35 | 45,7% | 7,1% | 0.1429 | 0.1769 |
+| RR1p5_magap_high60 | 1 | ma_gap_pct high60@1.22747 | 45 | 44,4% | 5,8% | 0.1111 | 0.1452 |
+| RR1p5_ret3_high50 | 1 | ret_3_pct high50@0.0372722 | 38 | 42,1% | 3,5% | 0.0526 | 0.0867 |
+| RR1p5_volz_high50 | 1 | vol_z high50@-0.275492 | 55 | 38,2% | -0,5% | -0.0455 | -0.0114 |
 
 ## RR 2.0
 

@@ -6,20 +6,20 @@ Regras FIXAS (pré-definidas). Thresholds calculados no TREINO.
 
 | name | filters | rule | trades_test | wr_test | Δwr_test | evR_test | ΔevR_test |
 |---|---:|---|---:|---:|---:|---:|---:|
-| RR1_ret3_high50__AND__bodypct_high60 | 2 | ret_3_pct high50@0.0372722 AND body_pct high60@0.178278 | 43 | 53,5% | 7,9% | 0.0698 | 0.1580 |
-| RR1_ret3_high50 | 1 | ret_3_pct high50@0.0372722 | 62 | 51,6% | 6,0% | 0.0323 | 0.1205 |
-| RR1_ret3_high50__AND__slope_low80 | 2 | ret_3_pct high50@0.0372722 AND slope_strength low80@0.277751 | 55 | 50,9% | 5,3% | 0.0182 | 0.1064 |
-| RR1_volz_high50 | 1 | vol_z high50@-0.275492 | 80 | 50,0% | 4,4% | 0.0000 | 0.0882 |
-| RR1_magap_high60 | 1 | ma_gap_pct high60@1.31327 | 68 | 45,6% | 0,0% | -0.0882 | 0.0000 |
+| RR1_ret3_high50__AND__bodypct_high60 | 2 | ret_3_pct high50@0.0372722 AND body_pct high60@0.178278 | 43 | 53,5% | 7,5% | 0.0698 | 0.1501 |
+| RR1_ret3_high50 | 1 | ret_3_pct high50@0.0372722 | 62 | 51,6% | 5,6% | 0.0323 | 0.1126 |
+| RR1_ret3_high50__AND__slope_low80 | 2 | ret_3_pct high50@0.0372722 AND slope_strength low80@0.277751 | 55 | 50,9% | 4,9% | 0.0182 | 0.0985 |
+| RR1_volz_high50 | 1 | vol_z high50@-0.275492 | 81 | 50,6% | 4,6% | 0.0123 | 0.0926 |
+| RR1_magap_high60 | 1 | ma_gap_pct high60@1.31327 | 68 | 45,6% | -0,4% | -0.0882 | -0.0079 |
 
 ## RR 1.5
 
 | name | filters | rule | trades_test | wr_test | Δwr_test | evR_test | ΔevR_test |
 |---|---:|---|---:|---:|---:|---:|---:|
-| RR1p5_ret3_high50__AND__slope_low80 | 2 | ret_3_pct high50@0.0393346 AND slope_strength low80@0.276009 | 52 | 48,1% | 9,9% | 0.2019 | 0.2477 |
-| RR1p5_magap_high60 | 1 | ma_gap_pct high60@1.24529 | 68 | 44,1% | 5,9% | 0.1029 | 0.1487 |
-| RR1p5_ret3_high50 | 1 | ret_3_pct high50@0.0393346 | 59 | 44,1% | 5,9% | 0.1017 | 0.1475 |
-| RR1p5_volz_high50 | 1 | vol_z high50@-0.290896 | 80 | 41,2% | 3,1% | 0.0312 | 0.0771 |
+| RR1p5_ret3_high50__AND__slope_low80 | 2 | ret_3_pct high50@0.0393346 AND slope_strength low80@0.276009 | 52 | 48,1% | 9,4% | 0.2019 | 0.2360 |
+| RR1p5_magap_high60 | 1 | ma_gap_pct high60@1.24529 | 68 | 44,1% | 5,5% | 0.1029 | 0.1370 |
+| RR1p5_ret3_high50 | 1 | ret_3_pct high50@0.0393346 | 59 | 44,1% | 5,4% | 0.1017 | 0.1358 |
+| RR1p5_volz_high50 | 1 | vol_z high50@-0.290896 | 81 | 42,0% | 3,3% | 0.0494 | 0.0835 |
 
 ## RR 2.0
 
