@@ -6,10 +6,10 @@ Regras FIXAS (pré-definidas). Thresholds calculados no TREINO.
 
 | name | filters | rule | trades_test | wr_test | Δwr_test | evR_test | ΔevR_test |
 |---|---:|---|---:|---:|---:|---:|---:|
-| RR1_volz_high50 | 1 | vol_z high50@-0.249369 | 54 | 46,3% | 2,8% | -0.0741 | 0.0564 |
-| RR1_ret3_high50 | 1 | ret_3_pct high50@0.0383034 | 39 | 46,2% | 2,7% | -0.0769 | 0.0535 |
-| RR1_magap_high60 | 1 | ma_gap_pct high60@1.23863 | 47 | 44,7% | 1,2% | -0.1064 | 0.0241 |
-| RR1_ret3_high50__AND__slope_low80 | 2 | ret_3_pct high50@0.0383034 AND slope_strength low80@0.271242 | 36 | 44,4% | 1,0% | -0.1111 | 0.0193 |
+| RR1_volz_high50 | 1 | vol_z high50@-0.239186 | 54 | 48,1% | 3,6% | -0.0370 | 0.0717 |
+| RR1_ret3_high50 | 1 | ret_3_pct high50@0.0372722 | 40 | 47,5% | 2,9% | -0.0500 | 0.0587 |
+| RR1_ret3_high50__AND__slope_low80 | 2 | ret_3_pct high50@0.0372722 AND slope_strength low80@0.271206 | 37 | 45,9% | 1,4% | -0.0811 | 0.0276 |
+| RR1_magap_high60 | 1 | ma_gap_pct high60@1.24094 | 46 | 45,7% | 1,1% | -0.0870 | 0.0217 |
 
 ## RR 1.5
 
