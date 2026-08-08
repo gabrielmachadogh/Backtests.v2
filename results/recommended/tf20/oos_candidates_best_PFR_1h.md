@@ -15,10 +15,10 @@ Regras FIXAS (pré-definidas). Thresholds calculados no TREINO.
 
 | name | filters | rule | trades_test | wr_test | Δwr_test | evR_test | ΔevR_test |
 |---|---:|---|---:|---:|---:|---:|---:|
-| RR1p5_magap_high60 | 1 | ma_gap_pct high60@1.22497 | 44 | 45,5% | 8,0% | 0.1364 | 0.1989 |
-| RR1p5_ret3_high50__AND__slope_low80 | 2 | ret_3_pct high50@0.0372722 AND slope_strength low80@0.271171 | 35 | 42,9% | 5,4% | 0.0714 | 0.1339 |
-| RR1p5_ret3_high50 | 1 | ret_3_pct high50@0.0372722 | 38 | 39,5% | 2,0% | -0.0132 | 0.0493 |
-| RR1p5_volz_high50 | 1 | vol_z high50@-0.275492 | 56 | 37,5% | 0,0% | -0.0625 | 0.0000 |
+| RR1p5_magap_high60 | 1 | ma_gap_pct high60@1.22997 | 43 | 46,5% | 7,9% | 0.1628 | 0.1969 |
+| RR1p5_ret3_high50__AND__slope_low80 | 2 | ret_3_pct high50@0.0372324 AND slope_strength low80@0.270919 | 36 | 44,4% | 5,8% | 0.1111 | 0.1452 |
+| RR1p5_ret3_high50 | 1 | ret_3_pct high50@0.0372324 | 39 | 41,0% | 2,4% | 0.0256 | 0.0597 |
+| RR1p5_volz_high50 | 1 | vol_z high50@-0.267522 | 55 | 40,0% | 1,4% | 0.0000 | 0.0341 |
 
 ## RR 2.0
 
