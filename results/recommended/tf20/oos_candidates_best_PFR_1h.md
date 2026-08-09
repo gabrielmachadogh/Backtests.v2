@@ -6,19 +6,19 @@ Regras FIXAS (pré-definidas). Thresholds calculados no TREINO.
 
 | name | filters | rule | trades_test | wr_test | Δwr_test | evR_test | ΔevR_test |
 |---|---:|---|---:|---:|---:|---:|---:|
-| RR1_volz_high50 | 1 | vol_z high50@-0.239186 | 54 | 48,1% | 3,6% | -0.0370 | 0.0717 |
-| RR1_ret3_high50 | 1 | ret_3_pct high50@0.0372722 | 40 | 47,5% | 2,9% | -0.0500 | 0.0587 |
-| RR1_ret3_high50__AND__slope_low80 | 2 | ret_3_pct high50@0.0372722 AND slope_strength low80@0.271206 | 37 | 45,9% | 1,4% | -0.0811 | 0.0276 |
-| RR1_magap_high60 | 1 | ma_gap_pct high60@1.24094 | 46 | 45,7% | 1,1% | -0.0870 | 0.0217 |
+| RR1_volz_high50 | 1 | vol_z high50@-0.238376 | 54 | 48,1% | 3,6% | -0.0370 | 0.0717 |
+| RR1_ret3_high50 | 1 | ret_3_pct high50@0.0372324 | 40 | 47,5% | 2,9% | -0.0500 | 0.0587 |
+| RR1_magap_high60 | 1 | ma_gap_pct high60@1.24324 | 45 | 46,7% | 2,1% | -0.0667 | 0.0420 |
+| RR1_ret3_high50__AND__slope_low80 | 2 | ret_3_pct high50@0.0372324 AND slope_strength low80@0.271171 | 37 | 45,9% | 1,4% | -0.0811 | 0.0276 |
 
 ## RR 1.5
 
 | name | filters | rule | trades_test | wr_test | Δwr_test | evR_test | ΔevR_test |
 |---|---:|---|---:|---:|---:|---:|---:|
-| RR1p5_magap_high60 | 1 | ma_gap_pct high60@1.22997 | 43 | 46,5% | 7,9% | 0.1628 | 0.1969 |
-| RR1p5_ret3_high50__AND__slope_low80 | 2 | ret_3_pct high50@0.0372324 AND slope_strength low80@0.270919 | 36 | 44,4% | 5,8% | 0.1111 | 0.1452 |
-| RR1p5_ret3_high50 | 1 | ret_3_pct high50@0.0372324 | 39 | 41,0% | 2,4% | 0.0256 | 0.0597 |
-| RR1p5_volz_high50 | 1 | vol_z high50@-0.267522 | 55 | 40,0% | 1,4% | 0.0000 | 0.0341 |
+| RR1p5_magap_high60 | 1 | ma_gap_pct high60@1.22997 | 43 | 46,5% | 8,3% | 0.1628 | 0.2077 |
+| RR1p5_ret3_high50__AND__slope_low80 | 2 | ret_3_pct high50@0.0372324 AND slope_strength low80@0.270919 | 36 | 44,4% | 6,2% | 0.1111 | 0.1561 |
+| RR1p5_ret3_high50 | 1 | ret_3_pct high50@0.0372324 | 39 | 41,0% | 2,8% | 0.0256 | 0.0706 |
+| RR1p5_volz_high50 | 1 | vol_z high50@-0.267522 | 56 | 39,3% | 1,1% | -0.0179 | 0.0271 |
 
 ## RR 2.0
 
