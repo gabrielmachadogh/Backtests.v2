@@ -25,9 +25,9 @@ Regras FIXAS (pré-definidas). Thresholds calculados no TREINO.
 
 | name | filters | rule | trades_test | wr_test | Δwr_test | evR_test | ΔevR_test |
 |---|---:|---|---:|---:|---:|---:|---:|
-| RR2_rsi_high60 | 1 | rsi high60@60.0456 | 77 | 42,9% | 10,0% | 0.2857 | 0.3013 |
-| RR2_pullback_atr_low50 | 1 | pullback_from_new_high_atr low50@1.05743 | 71 | 42,3% | 9,4% | 0.2676 | 0.2832 |
-| RR2_ret3_high50 | 1 | ret_3_pct high50@0.0372324 | 58 | 37,9% | 5,1% | 0.1379 | 0.1536 |
-| RR2_after_new_high_recent_flag_high50 | 1 | after_new_high_recent_flag high50@1 | 81 | 35,8% | 3,0% | 0.0741 | 0.0897 |
-| RR2_volz_high50 | 1 | vol_z high50@-0.302112 | 79 | 32,9% | 0,1% | -0.0127 | 0.0030 |
+| RR2_rsi_high60 | 1 | rsi high60@60.0456 | 78 | 43,6% | 10,3% | 0.3077 | 0.3077 |
+| RR2_pullback_atr_low50 | 1 | pullback_from_new_high_atr low50@1.05743 | 72 | 43,1% | 9,7% | 0.2917 | 0.2917 |
+| RR2_ret3_high50 | 1 | ret_3_pct high50@0.0372324 | 59 | 39,0% | 5,6% | 0.1695 | 0.1695 |
+| RR2_after_new_high_recent_flag_high50 | 1 | after_new_high_recent_flag high50@1 | 82 | 36,6% | 3,3% | 0.0976 | 0.0976 |
+| RR2_volz_high50 | 1 | vol_z high50@-0.302112 | 80 | 33,8% | 0,4% | 0.0125 | 0.0125 |
 
