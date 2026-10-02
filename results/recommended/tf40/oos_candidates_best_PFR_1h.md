@@ -6,9 +6,9 @@ Regras FIXAS (pré-definidas). Thresholds calculados no TREINO.
 
 | name | filters | rule | trades_test | wr_test | Δwr_test | evR_test | ΔevR_test |
 |---|---:|---|---:|---:|---:|---:|---:|
-| RR1_volz_high50 | 1 | vol_z high50@-0.290896 | 114 | 53,5% | 4,8% | 0.0702 | 0.0969 |
-| RR1_ret3_high50 | 1 | ret_3_pct high50@0.0371925 | 89 | 52,8% | 4,1% | 0.0562 | 0.0829 |
-| RR1_magap_high60 | 1 | ma_gap_pct high60@1.33404 | 90 | 47,8% | -0,9% | -0.0444 | -0.0177 |
+| RR1_volz_high50 | 1 | vol_z high50@-0.285581 | 111 | 54,1% | 4,9% | 0.0811 | 0.0971 |
+| RR1_ret3_high50 | 1 | ret_3_pct high50@0.0372324 | 88 | 53,4% | 4,2% | 0.0682 | 0.0842 |
+| RR1_magap_high60 | 1 | ma_gap_pct high60@1.3353 | 90 | 48,9% | -0,3% | -0.0222 | -0.0062 |
 
 ## RR 1.5
 
